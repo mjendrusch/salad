@@ -791,3 +791,48 @@ In principle, any config and set of parameters can be used for this
 script, adjusting the denoising settings as described above.
 
 # salad datasets and training
+What follows is some minimal documentation on setting up PDB for training. We will expand this section with all the details of how to customize training datasets and scripts soon.
+
+## PDB data setup
+The directory `data/allpdb/` contains all scripts required to download and set up data files for training `salad` models.
+To set up the dataset, copy the contents of that directory to the location where you want to store the data. Then activate the `salad` conda environment you created during installation.
+
+You can now download the current version of PDB:
+```bash
+cd data/allpdb/
+# get PDB structures
+bash download_allpdb.sh
+# get PDB sequences
+bash download_seqres.sh
+# get chemical component dictionary
+wget https://files.wwpdb.org/pub/pdb/data/monomers/components.cif.gz
+```
+
+Then, you can convert all PDB files to the npz format used by the `salad` data loaders:
+```bash
+bash cifparser.sh
+```
+This could take a couple of hours to finish.
+
+Finally, you generate a list of successfully converted biological assemblies:
+```bash
+python get_chain_assemblies.py
+```
+
+Together with the files provided in this repository this should be all the data needed to use the `salad.data.allpdb.AllPDB` dataloaders.
+
+## training salad models
+Having set up PDB data, you can then train `salad` models using:
+```bash
+python -m salad.training.train_noise_schedule_benchmark.py \
+    --data_path /path/to/data/allpdb/ \
+    --config default_vp \
+    --path /path/to/output/ \
+    --suffix "specific-model-name" \
+    --num_aa 1024 \
+    --p_complex 0.5 \
+    --multigpu True \
+    --rebatch 4
+```
+
+This will run training on PDB for the `default_vp` config, showing the model up to 1024 amino acids per micro-batch, 4 micro-batches per GPU. This requires an nvidia GPU with at least 24 GB VRAM. We have found training to work well even on RTX 3090 GPUs. 
