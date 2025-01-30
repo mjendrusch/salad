@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "salad"
+version = "0.1.0"
+description = "Protein structure generation with denoising models."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+keywords = ["protein", "machine learning", "jax", "diffusion models"]
+authors = [{ name = "Michael A. Jendrusch", email = "michael.jendrusch@embl.de" }]
+maintainers = [{ name = "Michael A. Jendrusch", email = "michael.jendrusch@embl.de" }]
+
+classifiers = [
+
+]
+
+dependencies = [
+    "torch>=2.0",
+    "alphafold @ git+https://github.com/google-deepmind/alphafold.git@v2.3.1",
+    "jax[cuda12]",
+    "dm-haiku @ git+https://github.com/deepmind/dm-haiku",
+    "numpy",
+    "flexloop @ git+https://github.com/mjendrusch/flexloop.git",
+    "gemmi"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/mjendrusch/salad"
+"Bug reportes" = "https://github.com/mjendrusch/salad/issues"
+"Source" = "https://github.com/mjendrusch/salad/"
