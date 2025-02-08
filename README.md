@@ -10,7 +10,7 @@
 salad (**s**parse **al**l-**a**tom **d**enoising) is the name of a family of machine learning models for controlled protein structure generation.
 Like many previous approaches to protein structure generation (e.g. [RFdiffusion](https://github.com/RosettaCommons/RFdiffusion), [Genie2](https://github.com/aqlaboratory/genie2) and [Chroma](https://github.com/generatebio/chroma)), salad is based on denoising diffusion models and is trained to gradually transform random noise into realistic protein structures.
 
-Unlike previous approaches, salad was developed from the ground up with efficiency in mind. salad outperforms its predecessors by a large margin and thus allows for higher-throughput structure generation. To give an example of how fast salad really is in comparison to previous methods, imagine you want to generated a set of 1,000 amino acid proteins on your previous generation RTX 3090. You start generation and go on a 10 minute coffee break. If you used salad with default settings, you come back to ~45 generated strutures. If you used RFdiffusion, you might come back to find one or two.
+Unlike previous approaches, salad was developed from the ground up with efficiency in mind. salad outperforms its predecessors by a large margin and thus allows for higher-throughput structure generation. To give an example of how fast salad really is in comparison to previous methods, imagine you want to generate a set of 1,000 amino acid proteins on your previous generation RTX 3090. You start generation and go on a 10 minute coffee break. If you used salad with default settings, you come back to ~45 generated structures. If you used RFdiffusion, you might come back to find one or two.
 
 <p align="center">
   <img src="./assets/SALADRuntimeDark.png" alt="alt text" width="400px" align="middle"/>
@@ -112,7 +112,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 - [salad datasets and training](#salad-datasets-and-training)
 
 # Roadmap
-While the models and code provided here are functional and reflect the state of salad we used for our [manuscript](TODO), we realize that ther is a lot of room for improvement. As it stands, salad is not as user-friendly as it probably could be and the set of its features is neither a strict superset nor a strict subset of the features provided by other methods for protein structure generation. With this in mind, we provide a roadmap of improvements and features we would like to implement over the following months to make salad as good of a protein design tool as we can.
+While the models and code provided here are functional and reflect the state of salad we used for our [manuscript](TODO), we realize that there is a lot of room for improvement. As it stands, salad is not as user-friendly as it probably could be and the set of its features is neither a strict superset nor a strict subset of the features provided by other methods for protein structure generation. With this in mind, we provide a roadmap of improvements and features we would like to implement over the following months to make salad as good of a protein design tool as we can.
 
 ## quality of life improvements
 - [ ] provide Colab notebooks
@@ -271,7 +271,7 @@ To use these, please download and unpack the autoencoder parameters first:
 wget https://zenodo.org/records/14711580/files/ae_params.tar.gz
 tar -xzf ae_params.tar.gz
 ```
-This will create a directory `ae_params`, which contains the folowing autoencoder checkpoints:
+This will create a directory `ae_params`, which contains the following autoencoder checkpoints:
 * `small_inner-200k.jax`: sparse autoencoder with inner product-based distance prediction for neighbour selection.
 * `small_none-200k.jax`: sparse autoencoder with only structure-based neighbour selection.
 * `small_semiequivariant-200k.jax`: same as `small_inner`, but using additional non-equivariant features.
@@ -363,7 +363,7 @@ noise distribution using `--cloud_std`. The resulting protein
 structures will have a standard deviation of atom positions
 close to this value. In this example we set `--cloud_std` to
 the `default` function, which was implemented to approximate
-the distribution of atom position standard devations for proteins
+the distribution of atom position standard deviations for proteins
 of a given length `num_aa`.
 
 Further usage examples can be found in the `scripts/` directory,
@@ -607,7 +607,7 @@ python salad/training/eval_ve_shape.py \
 ```
 
 The `letters/` directory contains example shape specifications for
-a number of letters. Those letter shapes were manualy generated and
+a number of letters. Those letter shapes were manually generated and
 `--blob_scale` was gradually adjusted until generated protein 
 structures had legible letter-shapes.
 
