@@ -105,11 +105,18 @@ Licensed under the Apache License, Version 2.0 (the "License");
     - [--screw\_translation](#--screw_translation)
     - [--screw\_radius](#--screw_radius)
     - [--screw\_angle](#--screw_angle)
+    - [--fixcenter\_threshold](#--fixcenter_threshold)
+    - [--compact\_lr](#--compact_lr)
+    - [--clash\_lr](#--clash_lr)
+    - [--f\_small](#--f_small)
+    - [--f\_strand](#--f_strand)
     - [--mix\_output (couple or replicate)](#--mix_output-couple-or-replicate)
     - [--mode (screw or rotation)](#--mode-screw-or-rotation)
     - [--sym\_noise (default: True)](#--sym_noise-default-true)
   - [Multi-state design](#multi-state-design)
 - [salad datasets and training](#salad-datasets-and-training)
+  - [PDB data setup](#pdb-data-setup)
+  - [training salad models](#training-salad-models)
 
 # Roadmap
 While the models and code provided here are functional and reflect the state of salad we used for our [manuscript](TODO), we realize that there is a lot of room for improvement. As it stands, salad is not as user-friendly as it probably could be and the set of its features is neither a strict superset nor a strict subset of the features provided by other methods for protein structure generation. With this in mind, we provide a roadmap of improvements and features we would like to implement over the following months to make salad as good of a protein design tool as we can.
@@ -155,6 +162,9 @@ install ProteinMPNN following the instructions [here](https://github.com/daupara
 
 To set up design benchmarking using the scripts in this repository,
 install `novobench` following the instructions [here](https://github.com/mjendrusch/novobench).
+
+**Note:** salad will currently not install with GPU support on ARM devices.
+I will look into installing with jax-metal for MacOS devises further down the line.
 
 ## Generating your first proteins
 After installing `salad` and unpacking the parameters, you are ready to design your first proteins. 
@@ -729,6 +739,31 @@ Angle of rotation between two successive repeat units around the central
 axis of rotation. For designs with --screw_translation 0.0 this needs to
 be less than or equal to 360 / --replicate_count, as it will result in
 clashing structures otherwise.
+
+### --fixcenter_threshold
+Noise level above which the center of mass of each repeat unit is held
+fixed exactly at the specified --screw_radius. Default: 0.0001.
+
+### --compact_lr
+Learning rate for compactness loss, which improves repeat unit globularity.
+Default: 0.0 (disabled). Reasonable values lie in the range 1e-4 to 1e-3.
+
+### --clash_lr
+Learning rate for anti-clash loss, which counteracts clashes in generated structures.
+Default: 0.0 (disabled). Reasonable values lie in the range 5e-3 to 1e-1.
+
+### --f_small
+Maximum fraction of small amino acids (ALA / GLY) in generated structures.
+This filters high-ALA/GLY structures which are unlikely to be designable
+without the need for structure prediction.
+Small amino acids can also be reduced by increasing --clash_lr.
+Default: 1.0 (disabled). Reasonable values are 0.10 (strict), 0.20 (lax)
+
+### --f_strand
+Maximum fraction of beta strand residues in generated structures.
+This filters high-strand structures which are unlikely to be designable
+without the need for structure prediction.
+Default: 1.0 (disabled). An example reasonable value is 0.3, if you want no all-beta folds.
 
 ### --mix_output (couple or replicate)
 Specifies if repeat units should be averaged for symmetrization (couple)

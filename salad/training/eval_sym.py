@@ -19,41 +19,9 @@ from salad.aflib.model.all_atom_multimer import atom14_to_atom37, get_atom37_mas
 from salad.modules.noise_schedule_benchmark import (
     StructureDiffusionPredict, StructureDiffusionNoise, sigma_scale_cosine, sigma_scale_framediff)
 from salad.modules.config import noise_schedule_benchmark as config_choices
+from salad.modules.utils.geometry import index_mean
+from salad.modules.utils.dssp import assign_dssp
 from flexloop.utils import parse_options
-
-class Compactness:
-    def __init__(self, threshold=0.5, scale=1.0):
-        self.threshold = threshold
-        self.scale = scale
-
-    def update_pos(self, pos, time):
-        def cost(x):
-            dist = jnp.sqrt((jnp.maximum(x[:, None] - x[None, :], 1e-3) ** 2).sum(axis=-1))
-            switch = jnp.maximum(1 - ((dist - 2) / 8) ** 6, 1e-6) / jnp.maximum(1 - ((dist - 2) / 8) ** 12, 1e-6)
-            return switch.mean()
-        grad = jax.grad(cost, argnums=0)(pos[:, 1])
-        grad = jnp.where(jnp.isnan(grad), 0, grad)
-        update = time * self.scale * grad[:, None]
-        update = jnp.where((time > self.threshold)[:, None, None], update, 0)
-        return pos + update
-
-class Declash:
-    def __init__(self, threshold=0.5, scale=1.0):
-        self.threshold = threshold
-        self.scale = scale
-
-    def update_pos(self, pos, time):
-        def cost(x):
-            dist = jnp.sqrt((jnp.maximum(x[:, None] - x[None, :], 1e-3) ** 2).sum(axis=-1))
-            index = np.arange(pos.shape[0])
-            rdist = abs(index[:, None] - index[None, :])
-            clash = ((rdist > 3) * jax.nn.relu(7 - dist) ** 2).mean()
-            return -clash
-        grad = jax.grad(cost, argnums=0)(pos[:, 1])
-        grad = jnp.where(jnp.isnan(grad), 0, grad)
-        update = time[:, None, None] * self.scale * grad[:, None]
-        update = jnp.where((time > self.threshold)[:, None, None], update, 0)
-        return pos + update
 
 class Screw:
     def __init__(self, count=3, angle=0, radius=15.0, translation=0.0, chain_center=False):
@@ -83,14 +51,14 @@ class Screw:
         result = jnp.concatenate(replicates, axis=0)
         return result - result[:, 1].mean(axis=0)
 
-    def couple_pos(self, x: jnp.ndarray):
+    def couple_pos(self, x: jnp.ndarray, do_radius: bool):
         # couple positions
         size = x.shape[0] // self.count
         representative = 0
         for idx in range(self.count):
             representative += jnp.einsum(
                 "...c,cd->...d",
-                cyclic_centering(x[idx * size:(idx + 1) * size]),
+                cyclic_centering(x[idx * size:(idx + 1) * size], docenter=do_radius),
                 self.rot_x[idx].T)
         representative /= self.count
         return representative
@@ -100,9 +68,9 @@ class Screw:
         idx = self.count // 2
         representative = jnp.einsum(
             "...c,cd->...d",
-            cyclic_centering(x[idx * size:(idx + 1) * size]),
+            cyclic_centering(x[idx * size:(idx + 1) * size], docenter=do_radius),
             self.rot_x[idx].T)
-        return jnp.where(do_radius, representative, x[idx * size:(idx + 1) * size])
+        return representative#jnp.where(do_radius, representative, x[idx * size:(idx + 1) * size])
 
     def replicate_features(self, data: jnp.ndarray):
         return jnp.concatenate(self.count * [data], axis=0)
@@ -192,6 +160,7 @@ class ScrewVP:
         unit = data[idx * subsize:(idx + 1) * subsize]
         return unit
 
+# TODO refactor: move common step-components to their own module
 def model_step(config, sym_op: Screw):
     config = deepcopy(config)
     config.eval = True
@@ -201,15 +170,44 @@ def model_step(config, sym_op: Screw):
         # apply gradients & symmetrise inputs
         pos = data["pos"]
         ts = data["t_pos"][0]
-        do_radius = ts > 40.0
+        # decide if chains should be fixed at radius
+        do_radius = ts > (config.fixcenter_threshold or 40.0)
         if config.mix_output == "couple":
             mix_output = sym_op.couple_pos
         else:
             mix_output = sym_op.select_pos
         pos = sym_op.replicate_pos(mix_output(pos, do_radius), do_radius)
-        # TODO: apply gradients
-        # pos = Declash().update_pos(pos, data["t_pos"])
+        # potentially apply compacting update
+        ca = pos[:, 1]
+        resi = data["residue_index"]
+        chain = data["chain_index"]
+        num_aa = chain.shape[0]
+        num_rep = sym_op.count
+        same_chain = chain[:, None] == chain[None, :]
+        mean_pos = ca.reshape(num_rep, num_aa // num_rep, 3).mean(axis=1, keepdims=True)
+        mean_pos = jnp.broadcast_to(mean_pos, (num_rep, num_aa // num_rep, 3)).reshape(-1, 3)
+        #index_mean(ca, chain, data["mask"][:, None])
+        compact_update = mean_pos[:, None] - pos
+        rdist = jnp.where(same_chain, abs(resi[:, None] - resi[None, :]), jnp.inf)
+        long_range = rdist > 16
+        # clashyness metric to take gradients over
+        def clashy(x):
+            clash_threshold = 8.0
+            dist = jnp.sqrt(jnp.maximum(
+                ((x[:, None] - x[None, :]) ** 2).sum(axis=-1), 1e-6))
+            clashyness = jnp.where(
+                long_range,
+                jax.nn.relu(clash_threshold - dist) / clash_threshold, 0).sum()
+            return clashyness
+        clash_update = -jax.grad(clashy, argnums=(0,))(ca)[0][:, None]
+        compact_lr = config.compact_lr
+        clash_lr = config.clash_lr
+        pos += compact_lr * data["t_pos"][:, None, None] * compact_update
+        pos += clash_lr * data["t_pos"][:, None, None] * clash_update
         data["pos"] = pos
+        if "dssp_condition" in data:
+            data["dssp_condition"] = sym_op.replicate_features(
+                sym_op.select_features(data["dssp_condition"]))
         # apply noise
         data.update(noise(data))
         # symmetrise noise
@@ -218,11 +216,6 @@ def model_step(config, sym_op: Screw):
             pos_noised = sym_op.replicate_pos(sym_op.select_pos(pos_noised, do_radius), do_radius)
         data["pos_noised"] = pos_noised
         out, prev = predict(data, prev)
-        # out["atom_pos"] = sym_op.replicate_pos(sym_op.select_pos(out["atom_pos"]))
-        # out["aa"] = sym_op.replicate_features(sym_op.select_features(out["aa"]))
-        # out["aatype"] = sym_op.replicate_features(sym_op.select_features(out["aatype"]))
-        # prev["pos"] = sym_op.replicate_pos(sym_op.couple_pos(prev["pos"]))
-        # prev["local"] = sym_op.replicate_features(sym_op.couple_features(prev["local"]))
         return out, prev
     return step
 
@@ -357,9 +350,7 @@ def parse_dssp(data):
     return np.array([DSSP_CODE.index(c) for c in data.strip()], dtype=np.int32)
 
 def cyclic_centering(x, docenter=True):
-    if not docenter:
-        return x
-    return x.at[:].add(-x[:, 1].mean(axis=0))
+    return jnp.where(docenter, x.at[:].add(-x[:, 1].mean(axis=0)), x)
 
 def rot_x(angle):
     return jnp.array([
@@ -383,22 +374,47 @@ def decode_sequence(x):
     AA_CODE="ARNDCQEGHILKMFPSTWYVX"
     return "".join([AA_CODE[c] for c in x])
 
+def eval_dssp(pos, replicate_count):
+    L = pos.shape[0] // replicate_count
+    pos = pos[:L]
+    dssp, _, _ = assign_dssp(
+        pos[:, :4], jnp.zeros((L,), dtype=jnp.int32), mask=jnp.ones((L,), dtype=jnp.bool_))
+    loop, helix, strand = jax.nn.one_hot(dssp, 3, axis=-1).mean(axis=0)
+    return dict(L=loop, H=helix, E=strand)
+
+def eval_squish(aa):
+    seq = decode_sequence(aa)
+    return (seq.count("A") + seq.count("G")) / len(seq)
+
 if __name__ == "__main__":
     opt = parse_options(
         "sample cyclic proteins from a protein diffusion model.",
         params="checkpoint.jax",
         out_path="outputs/",
-        config="default",
-        timescale_pos="cosine(t)",
+        config="default_ve_scaled",
+        timescale_pos="ve(t)",
         timescale_seq="1",
-        num_aa="100",
+        num_aa="100:100:100:100",
         sym="False",
         merge_chains="False",
-        replicate_count=3,
-        screw_angle=30.0,
+        # number of replicas of a repeat subunit
+        replicate_count=4,
+        # angle of rotation around the symmetry axis
+        screw_angle=90.0,
+        # center of mass translation along the symmetry axis
         screw_translation=0.0,
+        # center of mass distance from the symmetry axis
         screw_radius=0.0,
-        sym_mean="True",
+        # threshold noise level below which subunits are not centered
+        fixcenter_threshold=0.0001,
+        # learning rate for compactness gradients
+        compact_lr=0.0,
+        # learning rate for clash gradients
+        clash_lr=0.0,
+        # filter designs with ALA/GLY fraction > f_small
+        f_small=1.0,
+        # filter designs with beta-strand fraction > f_strand
+        f_strand=1.0,
         sym_noise="True",
         num_designs=10,
         num_steps=500,
@@ -406,16 +422,14 @@ if __name__ == "__main__":
         dssp_mean="none",
         dssp="none",
         mode="screw",
-        prev_threshold=1.0,
+        prev_threshold=0.9,
         cloud_std="none",
         mix_output="couple",
-        two_stage="False",
         sym_threshold=0.0,
         jax_seed=42
     )
     dssp_mean = parse_dssp_mean(opt.dssp_mean)
     dssp = parse_dssp(opt.dssp)
-    two_stage = opt.two_stage == "True"
 
     print(f"Running protein design with specification {opt.num_aa}")
     start = time.time()
@@ -430,6 +444,10 @@ if __name__ == "__main__":
     config.mix_output = opt.mix_output
     config.cyclic = is_cyclic
     config.replicate_noise = opt.sym_noise == "True"
+    config.compact_lr = opt.compact_lr
+    config.clash_lr = opt.clash_lr
+    config.fixcenter_threshold = opt.fixcenter_threshold
+
     if opt.mode == "rotation":
         sym_op_type = ScrewVP
     if opt.mode == "screw":
@@ -457,7 +475,8 @@ if __name__ == "__main__":
     print(f"Inputs set up in {time.time() - start:.3f} seconds.")
     print(f"Start generating {opt.num_designs} designs with {opt.num_steps} denoising steps...")
     os.makedirs(opt.out_path, exist_ok=True)
-    for idx in range(opt.num_designs):
+    idx = 0
+    while idx < opt.num_designs:
         cloud_std = cloud_std_func(num_aa)
         data = dict(
             pos=init_pos,
@@ -503,6 +522,14 @@ if __name__ == "__main__":
             data["atom_pos"] = update["atom_pos"]
             data["aatype"] = update["aatype"]
             if step in out_steps:
+                alagly = eval_squish(data["aatype"])
+                if alagly > opt.f_small:
+                    print(f"failed, too much ALA / GLY {alagly * 100:.1f}")
+                    break
+                edssp = eval_dssp(data["pos"], opt.replicate_count)
+                if edssp["E"] > opt.f_strand:
+                    print(f"failed, too much strand {100 * edssp['E']:.1f} %")
+                    break
                 atom37 = atom14_to_atom37(data["atom_pos"], data["aatype"])
                 atom37_mask = get_atom37_mask(data["aatype"])
                 atom37_mask *= data["mask"][:, None]
@@ -512,42 +539,12 @@ if __name__ == "__main__":
                                     jnp.ones_like(atom37_mask, dtype=jnp.float32)))
                 pdb_string = to_pdb(protein)
                 sequence = decode_sequence(data["seq"])
-                print(sequence)
-                two_stage_suffix = ""
-                if two_stage:
-                    two_stage_suffix = "_prep"
-                with open(f"{opt.out_path}/result_{idx}_{step}{two_stage_suffix}.pdb", "wt") as f:
+                with open(f"{opt.out_path}/result_{idx}_{step}.pdb", "wt") as f:
                     f.write(pdb_string)
+                print(f"Design {idx} generated in {time.time() - start:.3f} seconds.")
+                print(f"With ALA/GLY percentage: {alagly * 100:.1f} % and secondary structure "
+                      f"H: {100 * edssp['H']:.1f} %, E: {100 * edssp['E']:.1f} %, L: {100 * edssp['L']:.1f} %")
                 if step == out_steps[-1]:
+                    idx += 1
                     break
-        if two_stage:
-            for step in range(100, opt.num_steps):
-                key, subkey = jax.random.split(key)
-                raw_t = 1 - step / opt.num_steps
-                scaled_t = parse_timescale(opt.timescale_pos)(raw_t)
-                data["t_pos"] = scaled_t * jnp.ones_like(data["t_pos"])
-                #if raw_t < opt.prev_threshold:
-                prev = init_prev
-                update, prev = model(params, subkey, data, prev)
-                data["pos"] = update["pos"]
-                data["seq"] = jnp.argmax(update["aa"], axis=-1)
-                maxprob = jax.nn.softmax(update["aa"], axis=-1).max(axis=-1)
-                data["atom_pos"] = update["atom_pos"]
-                data["aatype"] = update["aatype"]
-                if step in out_steps:
-                    atom37 = atom14_to_atom37(data["atom_pos"], data["aatype"])
-                    atom37_mask = get_atom37_mask(data["aatype"])
-                    atom37_mask *= data["mask"][:, None]
-                    protein = Protein(np.array(atom37), np.array(data["aatype"]),
-                                    np.array(atom37_mask), np.array(data["residue_index"]),
-                                    np.array(base_chain), maxprob[:, None] * np.array(
-                                        jnp.ones_like(atom37_mask, dtype=jnp.float32)))
-                    pdb_string = to_pdb(protein)
-                    sequence = decode_sequence(data["seq"])
-                    print(sequence)
-                    with open(f"{opt.out_path}/result_{idx}_{step}.pdb", "wt") as f:
-                        f.write(pdb_string)
-                    if step == out_steps[-1]:
-                        break
-        print(f"Design {idx} generated in {time.time() - start:.3f} seconds.")
     print("All designs successfully generated.")
