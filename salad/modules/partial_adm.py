@@ -168,7 +168,7 @@ class ADM(hk.Module):
         else:
             count = jax.random.randint(hk.next_rng_key(), (), 0, 3)
         prev = hk.fori_loop(0, count, iteration, prev)
-        prev = jax.tree_map(jax.lax.stop_gradient, prev)
+        prev = jax.tree_util.tree_map(jax.lax.stop_gradient, prev)
         local = model_iteration(data, prev)
         aa = aa_head(local)
         dssp = dssp_head(local)

@@ -85,7 +85,7 @@ class NuADM(hk.Module):
         # FIXME
         # count = 0 # jax.random.randint(hk.next_rng_key(), (), 0, 2)
         # prev = hk.fori_loop(0, count, iteration, prev)
-        # prev = jax.tree_map(jax.lax.stop_gradient, prev)
+        # prev = jax.tree_util.tree_map(jax.lax.stop_gradient, prev)
         local, _ = model_iteration(data, prev)
         aa = aa_predictor(local)
         predict_mask = (data["aa"] == 20) * (data["aa_gt"] != 20) * data["mask"]

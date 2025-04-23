@@ -804,8 +804,8 @@ class DecoderStack(hk.Module):
             # is > 1, unwrap the nested trajectory from shape
             # (depth / block_size, block_size, ...) to shape
             # (depth, ...)
-            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
-            sup_distogram = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], sup_distogram))
+            trajectory = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+            sup_distogram = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], sup_distogram))
         return local, pos, trajectory, sup_distogram
 
 class SemiEquivariantDecoderStack(hk.Module):
@@ -843,8 +843,8 @@ class SemiEquivariantDecoderStack(hk.Module):
             # is > 1, unwrap the nested trajectory from shape
             # (depth / block_size, block_size, ...) to shape
             # (depth, ...)
-            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
-            sup_distogram = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], sup_distogram))
+            trajectory = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+            sup_distogram = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], sup_distogram))
         return local, pos, trajectory, sup_distogram
 
 # nonequivariant decoder
@@ -884,8 +884,8 @@ class NonEquivariantDecoderStack(hk.Module):
             # is > 1, unwrap the nested trajectory from shape
             # (depth / block_size, block_size, ...) to shape
             # (depth, ...)
-            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
-            sup_distogram = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], sup_distogram))
+            trajectory = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+            sup_distogram = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], sup_distogram))
         pos_project = Linear(5 * 3, bias=False)
         trajectory = hk.LayerNorm([-1], True, True)(trajectory)
         trajectory = pos_project(trajectory).reshape(

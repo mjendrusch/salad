@@ -1255,7 +1255,7 @@ class DiffusionStack(hk.Module):
             # (depth / block_size, block_size, ...) to shape
             # (depth, ...)
             # FIXME
-            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+            trajectory = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
         return local, pos, trajectory
 
 class InvariantDiffusionBlock(hk.Module):

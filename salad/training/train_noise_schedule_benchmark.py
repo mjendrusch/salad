@@ -22,7 +22,7 @@ def model_step(config, rebatch=1, is_training=True):
         config = deepcopy(config)
         config.eval = True
     def step(data):
-        data = jax.tree_map(lambda x: jnp.array(x), data)
+        data = jax.tree_util.tree_map(lambda x: jnp.array(x), data)
         data = cast_float(data, dtype=jnp.float32)
         # FIXME: sharded model?
         # loss, out = rebatch_call(module(config), rebatch=rebatch)
@@ -40,10 +40,10 @@ def make_training_inner(optimizer, step, data, accumulate=1, multigpu=True, ema_
     def ema_step(params, loop_state):
         aux_state = loop_state.aux_state
         if "ema_params" not in loop_state.aux_state:
-            aux_state = dict(ema_params=jax.tree_map(lambda x: x, params))
+            aux_state = dict(ema_params=jax.tree_util.tree_map(lambda x: x, params))
         else:
             ema_params = loop_state.aux_state["ema_params"]
-            ema_params = jax.tree_map(lambda x, y: ema_weight * x + (1 - ema_weight) * y, ema_params, params)
+            ema_params = jax.tree_util.tree_map(lambda x, y: ema_weight * x + (1 - ema_weight) * y, ema_params, params)
             aux_state = dict(ema_params=ema_params)
         return aux_state
     def training_inner(loop_state: State):
@@ -181,7 +181,7 @@ if __name__ == "__main__":
     print("INPUT OF SHAPE:")
     for name, value in item_0.items():
         print("  ", name, value.shape)
-    init_batch = jax.tree_map(lambda x: x[:rebatch * opt.accumulate * 100], item_0)
+    init_batch = jax.tree_util.tree_map(lambda x: x[:rebatch * opt.accumulate * 100], item_0)
     params = init(key, init_batch)
     print("Model parameters initialized.")
 

@@ -202,8 +202,15 @@ def model_step(config, sym_op: Screw):
         clash_update = -jax.grad(clashy, argnums=(0,))(ca)[0][:, None]
         compact_lr = config.compact_lr
         clash_lr = config.clash_lr
+        # clash_norm = jnp.linalg.norm(clash_update)
+        # jax.debug.print("{clash_lr} {compact_lr} {clash_norm}",
+        #                 clash_lr=clash_lr, compact_lr=compact_lr, clash_norm=clash_norm)
         pos += compact_lr * data["t_pos"][:, None, None] * compact_update
-        pos += clash_lr * data["t_pos"][:, None, None] * clash_update
+        clash_step = clash_lr * data["t_pos"][:, None, None] * clash_update
+        # clash_norm = jnp.linalg.norm(clash_step)
+        # jax.debug.print("{ts} {clash_norm}",
+        #                  ts=ts, clash_norm=clash_norm)
+        pos += clash_step#clash_lr * data["t_pos"][:, None, None] * clash_update
         data["pos"] = pos
         if "dssp_condition" in data:
             data["dssp_condition"] = sym_op.replicate_features(

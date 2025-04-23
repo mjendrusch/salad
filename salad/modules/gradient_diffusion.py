@@ -1225,7 +1225,7 @@ class DiffusionStack(hk.Module):
             # is > 1, unwrap the nested trajectory from shape
             # (depth / block_size, block_size, ...) to shape
             # (depth, ...)
-            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+            trajectory = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
         trajectory, dssp, aa = trajectory
         return local, pos, trajectory, dssp, aa
     
@@ -1278,7 +1278,7 @@ class EDMDiffusionStack(hk.Module):
             # is > 1, unwrap the nested trajectory from shape
             # (depth / block_size, block_size, ...) to shape
             # (depth, ...)
-            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+            trajectory = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
         trajectory, dssp, aa = trajectory
         return local, pos, trajectory, dssp, aa
 

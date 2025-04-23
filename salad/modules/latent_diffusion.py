@@ -844,7 +844,7 @@ class DecoderStack(hk.Module):
             # is > 1, unwrap the nested trajectory from shape
             # (depth / block_size, block_size, ...) to shape
             # (depth, ...)
-            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+            trajectory = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
         return local, latent, pos, trajectory
 
 def structure_augmentation_params(pos, batch, mask):

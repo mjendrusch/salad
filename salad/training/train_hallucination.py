@@ -13,7 +13,7 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.tensorboard.writer import SummaryWriter
 
 def rebatch_data(data, count):
-  return jax.tree_map(lambda x: x.reshape(count, -1, *x.shape[1:]), data)
+  return jax.tree_util.tree_map(lambda x: x.reshape(count, -1, *x.shape[1:]), data)
 
 def debatch_output(loss, out):
   def debatch_inner(x):
@@ -22,14 +22,14 @@ def debatch_output(loss, out):
     if len(x) > 1:
       return x[0]
   loss = loss.mean()
-  out = jax.tree_map(debatch_inner, out)
-  out["losses"] = jax.tree_map(lambda x: x.mean(), out["losses"])
+  out = jax.tree_util.tree_map(debatch_inner, out)
+  out["losses"] = jax.tree_util.tree_map(lambda x: x.mean(), out["losses"])
   return loss, out
 
 def train_step(config, rebatch=1, is_training=True):
   module = Hallucination
   def step(data):
-    data = jax.tree_map(lambda x: jnp.array(x), data)
+    data = jax.tree_util.tree_map(lambda x: jnp.array(x), data)
     data = cast_float(data, dtype=jnp.float32)
     fold = module(config)
     if rebatch > 1:
@@ -88,7 +88,7 @@ def ema_step(gamma=0.999):
     if "ema_params" not in aux_state:
       aux_state["ema_params"] = params
     else:
-      aux_state["ema_params"] = jax.tree_map(
+      aux_state["ema_params"] = jax.tree_util.tree_map(
         lambda x, y: x * gamma + (1 - gamma) * y,
         aux_state["ema_params"], params
       )
@@ -254,7 +254,7 @@ if __name__ == "__main__":
 
     BATCH_FACTOR=NUM_DEVICES * opt.accumulate * opt.rebatch
     init_batch = data.next()["train"]
-    init_batch = jax.tree_map(lambda x: x[:BATCH_FACTOR * 10], init_batch)
+    init_batch = jax.tree_util.tree_map(lambda x: x[:BATCH_FACTOR * 10], init_batch)
     rng = jax.random.PRNGKey(42)
     transformed = hk.transform(train_step(config, rebatch=opt.rebatch))
     init, step = transformed

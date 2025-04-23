@@ -1230,7 +1230,7 @@ class DiffusionStack(hk.Module):
             # is > 1, unwrap the nested trajectory from shape
             # (depth / block_size, block_size, ...) to shape
             # (depth, ...)
-            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+            trajectory = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
         return local, pos, trajectory
     
 class EDMDiffusionStack(hk.Module):
@@ -1287,7 +1287,7 @@ class EDMDiffusionStack(hk.Module):
             # is > 1, unwrap the nested trajectory from shape
             # (depth / block_size, block_size, ...) to shape
             # (depth, ...)
-            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+            trajectory = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
         return local, pos, trajectory
 
 def extract_condition_neighbours(num_index, num_spatial, num_random, num_block):
@@ -1426,7 +1426,7 @@ def se_diffusion_pair_features(c):
         pair_mask *= neighbours != -1
         index = jnp.arange(pair_mask.shape[0], dtype=jnp.int32)
         if pair_condition is not None:
-            pair_condition = jax.tree_map(
+            pair_condition = jax.tree_util.tree_map(
                 lambda x: x[index[:, None], neighbours],
                 pair_condition)
         pair = Linear(c.pair_size, bias=False, initializer="linear")(
@@ -1498,7 +1498,7 @@ def minimal_diffusion_pair_features(c):
         pair_mask *= neighbours != -1
         index = jnp.arange(pair_mask.shape[0], dtype=jnp.int32)
         if pair_condition is not None:
-            pair_condition = jax.tree_map(
+            pair_condition = jax.tree_util.tree_map(
                 lambda x: x[index[:, None], neighbours],
                 pair_condition)
         pair = Linear(c.pair_size, bias=False, initializer="linear")(
@@ -1533,7 +1533,7 @@ def diffusion_pair_features(c):
         pair_mask *= neighbours != -1
         index = jnp.arange(pair_mask.shape[0], dtype=jnp.int32)
         if pair_condition is not None:
-            pair_condition = jax.tree_map(
+            pair_condition = jax.tree_util.tree_map(
                 lambda x: x[index[:, None], neighbours],
                 pair_condition)
         pair = Linear(c.pair_size, bias=False, initializer="linear")(

@@ -5,6 +5,12 @@
 
 *Proteins designed to spell out "salad" – the name of this software – overlaid with their ESMfold predicted structures, listing the root mean square deviation between design and prediction (scRMSD).*
 
+## NOTICE: jax compatibility issue
+jax versions 0.5.1 to 0.5.3 seem to cause issues for symmetric protein generation using salad.
+salad works as expected for versions 0.5.0 and 0.6.0.
+I am therefore pinning jax to version 0.5.0 for now while I investigate the issue.
+If you have installed salad recently and your structures look bad, please check your jax version and reinstall.
+
 ## What's salad?
 
 salad (**s**parse **al**l-**a**tom **d**enoising) is the name of a family of machine learning models for controlled protein structure generation.
@@ -64,6 +70,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 
 # Table of contents
 - [salad - sparse all-atom denoising](#salad---sparse-all-atom-denoising)
+  - [NOTICE: jax compatibility issue](#notice-jax-compatibility-issue)
   - [What's salad?](#whats-salad)
   - [What's in this repository?](#whats-in-this-repository)
   - [License](#license)

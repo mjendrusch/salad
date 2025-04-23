@@ -25,7 +25,7 @@ def model_step(config, rebatch=1, is_training=True):
         config = deepcopy(config)
         config.eval = True
     def step(data):
-        data = jax.tree_map(lambda x: jnp.array(x), data)
+        data = jax.tree_util.tree_map(lambda x: jnp.array(x), data)
         data = cast_float(data, dtype=jnp.float32)
         loss, out = rebatch_call(module(config), rebatch=rebatch)(data)
         res_dict = {
@@ -154,8 +154,8 @@ if __name__ == "__main__":
     print("INPUT OF SHAPE:")
     for name, value in item_0.items():
         print("  ", name, value.shape)
-    init_batch = jax.tree_map(lambda x: x[:opt.rebatch * 100], item_0)
-    tabulate_batch = jax.tree_map(lambda x: x[:100], item_0)
+    init_batch = jax.tree_util.tree_map(lambda x: x[:opt.rebatch * 100], item_0)
+    tabulate_batch = jax.tree_util.tree_map(lambda x: x[:100], item_0)
     params = init(key, init_batch)
     print("Model parameters initialized.")
 
