@@ -34,8 +34,8 @@ import jax.numpy as jnp
 import haiku as hk
 
 # alphafold dependencies
-from alphafold.model.geometry import Vec3Array, Rigid3Array
-from alphafold.model.all_atom_multimer import (
+from salad.aflib.model.geometry import Vec3Array, Rigid3Array
+from salad.aflib.model.all_atom_multimer import (
     get_atom37_mask, get_atom14_mask, atom37_to_atom14, atom14_to_atom37, get_alt_atom14, get_atom14_is_ambiguous, find_optimal_renaming,
     torsion_angles_to_frames, frames_and_literature_positions_to_atom14_pos)
 

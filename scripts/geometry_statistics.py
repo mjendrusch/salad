@@ -2,8 +2,8 @@ import os
 import sys
 import json
 import numpy as np
-from alphafold.common.protein import from_pdb_string
-from alphafold.common.residue_constants import atom_types
+from salad.aflib.common.protein import from_pdb_string
+from salad.aflib.common.residue_constants import atom_types
 from salad.modules.utils.dssp import assign_dssp
 import jax
 

@@ -11,10 +11,10 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.common.protein import to_pdb, from_pdb_string, Protein
-from alphafold.model.all_atom_multimer import (
+from salad.aflib.common.protein import to_pdb, from_pdb_string, Protein
+from salad.aflib.model.all_atom_multimer import (
     atom37_to_atom14, atom14_to_atom37, get_atom14_mask, get_atom37_mask)
-from alphafold.model.geometry import Vec3Array
+from salad.aflib.model.geometry import Vec3Array
 
 from salad.modules.structure_autoencoder import StructureAutoencoderInference, StructureDecoderInference
 from salad.modules.config import distance_to_structure_decoder as config_choices

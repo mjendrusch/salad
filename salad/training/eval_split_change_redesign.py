@@ -13,8 +13,8 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.common.protein import from_pdb_string, to_pdb, Protein
-from alphafold.model.all_atom_multimer import atom14_to_atom37, get_atom37_mask
+from salad.aflib.common.protein import from_pdb_string, to_pdb, Protein
+from salad.aflib.model.all_atom_multimer import atom14_to_atom37, get_atom37_mask
 
 from salad.modules.noise_schedule_benchmark import (
     StructureDiffusionPredict, StructureDiffusionNoise, sigma_scale_cosine, sigma_scale_framediff)

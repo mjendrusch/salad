@@ -13,9 +13,9 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.common.protein import to_pdb, Protein, from_pdb_string
-from alphafold.model.geometry import Vec3Array
-from alphafold.model.all_atom_multimer import atom14_to_atom37, atom37_to_atom14, get_atom37_mask
+from salad.aflib.common.protein import to_pdb, Protein, from_pdb_string
+from salad.aflib.model.geometry import Vec3Array
+from salad.aflib.model.all_atom_multimer import atom14_to_atom37, atom37_to_atom14, get_atom37_mask
 
 from salad.modules.condition_to_sequence import (
     C2SInference)

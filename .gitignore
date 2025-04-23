@@ -1,3 +1,7 @@
+# salad outputs
+eval/
+slurm-*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

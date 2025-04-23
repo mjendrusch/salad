@@ -75,6 +75,12 @@ def cosine_decay_schedule(start_lr, decay_lr, warmup_steps, decay_steps):
         return result
     return schedule
 
+def warmup_schedule(start_lr, warmup_steps):
+    def schedule(count):
+        result = jnp.minimum(count / warmup_steps * start_lr, start_lr)
+        return result
+    return schedule
+
 def replicate_loop_state(state):
     devices = jax.devices()
     return State(
@@ -107,11 +113,15 @@ if __name__ == "__main__":
         rebatch=1,
         accumulate=1,
         jax_seed=42,
+        afdb_max_L=0.5,
+        afdb_min_plddt=70.0,
         multigpu="True",
         nanhunt="False",
         dataset="PDB",
         suffix="1",
         legacy_repetitive="True",
+        schedule_fixed="False",
+        order_agnostic="False"
     )
     NUM_DEVICES = jax.device_count()
     multigpu = opt.multigpu == "True"
@@ -121,6 +131,8 @@ if __name__ == "__main__":
     num_aa = opt.num_aa
     if opt.dataset == "SYNTHETE":
         num_aa = 256
+    elif opt.dataset.startswith("afdb"):
+        num_aa = 1024
     path = opt.path
     path = f"{path}/salad/nsb-{opt.config}-{opt.num_aa}-{opt.suffix}"
     writer = SummaryWriter(path)
@@ -129,6 +141,21 @@ if __name__ == "__main__":
     if opt.dataset == "SYNTHETE":
         from salad.data.synthete import SyntheteStream
         data = SyntheteStream(f"{opt.data_path}/synthete/")
+    elif opt.dataset.startswith("afdb"):
+        length_weights = False
+        if "length" in opt.dataset:
+            length_weights = True
+        from salad.data.afdb import AFDBStream
+        data = AFDBStream(
+            f"{opt.data_path}/afdb/",
+            f"{opt.data_path}/afdb/afdb1024_cluster_reps.csv",
+            length_weights=length_weights,
+            weight_max=500,
+            min_size=32,
+            # filter on loopiness and extent (fixed to the VP-scaled sampling range)
+            filter=lambda x: (x["plddt"] > 85.0) * (x["L"] <= opt.afdb_max_L) * (x["std_ca"] <= 3 + x["length"] ** 0.4) > 0,
+            min_plddt=opt.afdb_min_plddt,
+            order_agnostic=opt.order_agnostic == "True")
     else:
         data = BatchedProteinPDBStream(f"{opt.data_path}/allpdb/",
                                         seqres_aa="clusterSeqresAA",
@@ -168,6 +195,8 @@ if __name__ == "__main__":
         start_lr=opt.lr, decay_lr=opt.decay_lr,
         warmup_steps=opt.warmup_steps, decay_steps=opt.decay_steps)
     total_steps = opt.warmup_steps + opt.decay_steps + 1
+    if opt.schedule_fixed == "True":
+        schedule = warmup_schedule(start_lr=opt.lr, warmup_steps=opt.warmup_steps)
 
     print("Initializing optimizer state...")
     optimizer = optax.chain(

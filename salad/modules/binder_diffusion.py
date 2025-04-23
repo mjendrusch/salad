@@ -6,8 +6,8 @@ import jax.numpy as jnp
 import haiku as hk
 
 # alphafold dependencies
-from alphafold.model.geometry import Vec3Array
-from alphafold.model.all_atom_multimer import get_atom14_mask
+from salad.aflib.model.geometry import Vec3Array
+from salad.aflib.model.all_atom_multimer import get_atom14_mask
 
 # basic module imports
 from salad.modules.basic import (

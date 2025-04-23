@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import haiku as hk
 
 # alphafold dependencies
-from alphafold.model.geometry import Vec3Array, Rot3Array
+from salad.aflib.model.geometry import Vec3Array, Rot3Array
 
 # basic module imports
 from salad.modules.basic import (

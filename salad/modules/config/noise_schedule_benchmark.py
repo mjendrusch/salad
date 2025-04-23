@@ -117,6 +117,19 @@ default_ve_scaled.diffusion_kind = "edm"
 default_ve_scaled.pos_weight *= 100
 default_ve_scaled.trajectory_weight *= 100
 
+large_ve_scaled = deepcopy(default_ve_scaled)
+large_ve_scaled.local_size = 256
+large_ve_scaled.pair_size = 128
+
+large_ve_scaled_neq = deepcopy(large_ve_scaled)
+large_ve_scaled_neq.equivariance = "semi_equivariant"
+large_ve_scaled_neq.nonequivariant_dense = True
+large_ve_scaled_neq.heads = 8
+large_ve_scaled_neq.local_size = 128
+
+large_ve_scaled_neq_pair = deepcopy(large_ve_scaled_neq)
+large_ve_scaled_neq_pair.use_pair = True
+
 default_ve_scaled_omap = deepcopy(default_ve_scaled)
 default_ve_scaled_omap.use_omap = True
 
@@ -177,6 +190,10 @@ large_vp.pair_size = 128
 
 default_vp_scaled = deepcopy(default_vp)
 default_vp_scaled.diffusion_kind = "vp"
+
+large_vp_scaled = deepcopy(default_vp_scaled)
+large_vp_scaled.local_size = 256
+large_vp_scaled.pair_size = 128
 
 default_vp_scaled_omap = deepcopy(default_vp_scaled)
 default_vp_scaled_omap.use_omap = True

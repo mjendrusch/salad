@@ -7,19 +7,19 @@ from functools import partial
 import numbers
 from typing import Any, Dict, Mapping, Text, Tuple, Optional
 from typing_extensions import TypedDict
-from alphafold.model.geometry.rigid_matrix_vector import Float
+from salad.aflib.model.geometry.rigid_matrix_vector import Float
 
 import jax
 import jax.numpy as jnp
 
 import haiku as hk
 
-from alphafold.model import utils as afutils
-from alphafold.model import geometry
-from alphafold.model import folding_multimer as fmm
-from alphafold.model import all_atom_multimer
-from alphafold.common import residue_constants
-from alphafold.model.all_atom_multimer import (
+from salad.aflib.model import utils as afutils
+from salad.aflib.model import geometry
+from salad.aflib.model import folding_multimer as fmm
+from salad.aflib.model import all_atom_multimer
+from salad.aflib.common import residue_constants
+from salad.aflib.model.all_atom_multimer import (
   atom37_to_atom14, get_alt_atom14, get_atom14_is_ambiguous,
   find_optimal_renaming)
 

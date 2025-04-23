@@ -11,10 +11,10 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.common.protein import to_pdb, from_pdb_string, Protein
-from alphafold.model.all_atom_multimer import (
+from salad.aflib.common.protein import to_pdb, from_pdb_string, Protein
+from salad.aflib.model.all_atom_multimer import (
     atom37_to_atom14, atom14_to_atom37, get_atom14_mask, get_atom37_mask)
-from alphafold.model.geometry import Vec3Array
+from salad.aflib.model.geometry import Vec3Array
 
 from salad.modules.latent_diffusion import LatentDiffusionInference
 from salad.modules.config import latent_diffusion as config_choices

@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.model.layer_stack import layer_stack
+from salad.aflib.model.layer_stack import layer_stack
 
 class Linear(hk.Module):
     def __init__(self,

@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 
-from alphafold.model.geometry import Vec3Array
+from salad.aflib.model.geometry import Vec3Array
 
 from salad.modules.utils.geometry import index_sum, extract_aa_frames, distance_one_hot
 

@@ -13,9 +13,9 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.common.protein import to_pdb, Protein, from_pdb_string
-from alphafold.model.geometry import Vec3Array
-from alphafold.model.all_atom_multimer import atom14_to_atom37, atom37_to_atom14, get_atom37_mask
+from salad.aflib.common.protein import to_pdb, Protein, from_pdb_string
+from salad.aflib.model.geometry import Vec3Array
+from salad.aflib.model.all_atom_multimer import atom14_to_atom37, atom37_to_atom14, get_atom37_mask
 
 from salad.modules.noise_schedule_benchmark import (
     StructureDiffusionInference, sigma_scale_cosine, sigma_scale_framediff,
@@ -220,6 +220,7 @@ if __name__ == "__main__":
         template="none",
         template_aa="False",
         prev_threshold=0.99,
+        replace_threshold=0.0,
         cloud_std="none",
         depth_adjust="none",
         sym_threshold=0.0,
@@ -310,7 +311,8 @@ if __name__ == "__main__":
             pos = update["pos"]
             pos_centers = pos[:, 1].reshape(-1, 100, 3).mean(axis=1, keepdims=True)
             pos_centers = jnp.repeat(pos_centers, 100, axis=1).reshape(-1, 3)
-            pos = pos - pos_centers[:, None, :] + init_pos
+            if raw_t >= opt.replace_threshold:
+                pos = pos - pos_centers[:, None, :] + init_pos
             data["pos"] = pos
             data["seq"] = jnp.argmax(update["aa"], axis=-1)
             maxprob = jax.nn.softmax(update["aa"], axis=-1).max(axis=-1)

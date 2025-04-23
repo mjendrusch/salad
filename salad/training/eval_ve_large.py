@@ -13,9 +13,9 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.common.protein import to_pdb, Protein, from_pdb_string
-from alphafold.model.geometry import Vec3Array
-from alphafold.model.all_atom_multimer import atom14_to_atom37, atom37_to_atom14, get_atom37_mask
+from salad.aflib.common.protein import to_pdb, Protein, from_pdb_string
+from salad.aflib.model.geometry import Vec3Array
+from salad.aflib.model.all_atom_multimer import atom14_to_atom37, atom37_to_atom14, get_atom37_mask
 
 from salad.modules.noise_schedule_benchmark import (
     StructureDiffusionInference, sigma_scale_cosine, sigma_scale_framediff,
@@ -202,6 +202,9 @@ if __name__ == "__main__":
         cloud_std="none",
         depth_adjust="none",
         sym_threshold=0.0,
+        start_std=10.0,
+        start_lr=0.1,
+        start_steps=100,
         jax_seed=42
     )
     dssp_mean = parse_dssp_mean(opt.dssp_mean)
@@ -247,15 +250,15 @@ if __name__ == "__main__":
         # directions = np.random.randn(64, 3)
         # directions /= np.linalg.norm(directions, axis=-1)[..., None]
         # init_centers = np.cumsum(directions * 10.0, axis=0)
-        start = 10 * np.random.randn(5, 3)
+        start = opt.start_std * np.random.randn(5, 3)
         start = np.cumsum(start, axis=0)
         def cost(x):
             dist = jnp.sqrt(1e-6 + ((x[:, None] - x[None, :]) ** 2).sum(axis=-1))
             return ((1 - jnp.eye(5)) * (dist - 10) ** 2).mean()
         current = start
-        for _ in range(100):
+        for _ in range(opt.start_steps):
             grad = jax.grad(cost, argnums=0)(current)
-            current -= 0.1 * grad
+            current -= opt.start_lr * grad
         init_pos = np.repeat(current, 200, axis=0)[:num_aa]
         init_pos = np.repeat(init_pos[:, None], 5 + config.augment_size, axis=1)
         init_pos = jnp.array(init_pos)

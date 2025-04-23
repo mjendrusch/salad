@@ -6,8 +6,8 @@ import jax.numpy as jnp
 import haiku as hk
 
 # alphafold dependencies
-from alphafold.model.geometry import Vec3Array
-from alphafold.model.all_atom_multimer import get_atom14_mask
+from salad.aflib.model.geometry import Vec3Array
+from salad.aflib.model.all_atom_multimer import get_atom14_mask
 
 # basic module imports
 from salad.modules.basic import (
@@ -42,6 +42,7 @@ from salad.modules.utils.alphafold_loss import violation_loss
 from salad.modules.geometric import (
     SparseStructureAttention,
     SemiEquivariantSparseStructureAttention,
+    DenseNonEquivariantPointAttention,
     VectorLinear,
     vector_mean_norm,
     sequence_relative_position, distance_features,
@@ -845,6 +846,9 @@ class Diffusion(hk.Module):
         diffusion_stack_module = DiffusionStack
         if c.preconditioning == "edm_scaled":
             diffusion_stack_module = EDMDiffusionStack
+        if c.nonequivariant_dense:
+            diffusion_stack_module = NonEquivariantDenseDiffusionStack
+            self.diffusion_block = NonEquivariantDenseDiffusionBlock
         if c.repeat:
             diffusion_stack_module = RepeatDiffusionStack
         diffusion_stack = diffusion_stack_module(c, self.diffusion_block)
@@ -1526,6 +1530,63 @@ class EDMDiffusionStack(hk.Module):
             trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
         return local, pos, trajectory
 
+class NonEquivariantDenseDiffusionStack(hk.Module):
+    def __init__(self, config, block,
+                 name: Optional[str] = "diffusion_stack"):
+        super().__init__(name)
+        self.config = config
+        self.block = block
+
+    def __call__(self, local, pos, prev_pos,
+                 condition, pair_condition, time,
+                 resi, chain, batch, mask,
+                 cyclic_mask=None,
+                 sup_neighbours=None):
+        c = self.config
+        def fourier_resi_embedding(x, size=128):
+            val = x[..., None] / 10_000 ** (2 * jnp.arange(size // 2) / size)
+            return jnp.concatenate((jnp.sin(val), jnp.cos(val)), axis=-1)
+        scale = edm_scaling(c.sigma_data, 1.0, alpha=1.0, beta=time)
+        init_pos = scale["in"][:, None, None] * pos
+        local += Linear(local.shape[-1], bias=False, initializer=init_linear())(
+            init_pos.reshape(local.shape[0], -1))
+        # pos_embedding = fourier_resi_embedding(
+        #     resi + jax.random.randint(hk.next_rng_key(), (), 0, 200), size=local.shape[-1])
+        # local += pos_embedding
+        pos = pos * scale["skip"][:, None, None]
+        def stack_inner(block):
+            def _inner(data):
+                features, pos = data
+                # run the diffusion block
+                result = block(c)(
+                    features, pos, prev_pos,
+                    time, resi, chain, batch, mask)
+                features, pos = result
+                trajectory_output = pos
+                # return features & positions for the next block
+                # and positions to construct a trajectory
+                return (features, pos), trajectory_output
+            return _inner
+        diffusion_block = self.block
+        stack = block_stack(
+            c.diffusion_depth, c.block_size, with_state=True)(
+                hk.remat(stack_inner(diffusion_block)))
+        if c.resi_dual:
+            # handle ResiDual local features
+            incremental = local
+            ((local, incremental), pos), trajectory = stack(
+                ((local, incremental), pos))
+            local = local + hk.LayerNorm([-1], True, True)(incremental)
+        else:
+            (local, pos), trajectory = stack((local, pos))
+        if c.block_size > 1:
+            # if the block-size for nested gradient checkpointing
+            # is > 1, unwrap the nested trajectory from shape
+            # (depth / block_size, block_size, ...) to shape
+            # (depth, ...)
+            trajectory = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:], trajectory))
+        return local, pos, trajectory
+
 def extract_condition_neighbours(num_index, num_spatial, num_random, num_block):
     def inner(pos, pair_condition, resi, chain, batch, mask):
         # neighbours by residue index
@@ -2097,6 +2158,32 @@ class MinimalDiffusionBlock(hk.Module):
             return features, pos.astype(local_norm.dtype), aa
         return features, pos.astype(local_norm.dtype)
 
+class NonEquivariantDenseDiffusionBlock(hk.Module):
+    def __init__(self, config, name = "neq_dense_diffn"):
+        super().__init__(name)
+        self.config = config
+
+    def __call__(self, features, pos, prev_pos, time, resi, chain, batch, mask):
+        c = self.config
+        residual_update, residual_input, _ = get_residual_gadgets(
+            features, c.resi_dual)
+        features = residual_update(
+            features,
+            DenseNonEquivariantPointAttention(
+                c.key_size, c.heads, normalize=False, use_pair=c.use_pair is not None
+            )(residual_input(features), pos / c.sigma_data, resi, chain, batch, mask)
+        )
+        features = residual_update(
+            features,
+            NonEquivariantUpdate(c)(residual_input(features),
+                                    jnp.concatenate((pos, prev_pos), axis=-2) / c.sigma_data))
+        point_update = Linear(pos.shape[-2] * 3, bias=False, initializer="linear")(
+            residual_input(features)).reshape(*pos.shape)
+        out_scale = preconditioning_scale_factors(
+            c, time[:, None], c.sigma_data)["out"]
+        pos += out_scale[..., None] * point_update
+        return features, pos
+
 class AtomDiffusionBlock(hk.Module):
     def __init__(self, config, name: Optional[str] = "diffusion_block"):
         super().__init__(name)
@@ -2418,6 +2505,19 @@ def get_pair_condition(pos, aa, block_adjacency, pos_mask, resi, chain, batch, s
         block_contact_mask
     ), axis=-1)
     return jnp.where(pair_mask, pair_condition, 0)
+
+class NonEquivariantUpdate(hk.Module):
+    def __init__(self, config, name = "neq_update"):
+        super().__init__(name)
+        self.config = config
+
+    def __call__(self, local, pos):
+        c = self.config
+        pos = pos.reshape(local.shape[0], -1)
+        hidden = jnp.concatenate((local, pos), axis=-1)
+        gate = Linear(local.shape[-1] * c.factor, initializer="relu", bias=False)(hidden)
+        hidden = jax.nn.gelu(gate) * Linear(local.shape[-1] * c.factor, initializer="linear", bias=False)(hidden)
+        return Linear(local.shape[-1], bias=False, initializer="zeros")(hidden)
 
 class Update(hk.Module):
     def __init__(self, config, global_update=True,

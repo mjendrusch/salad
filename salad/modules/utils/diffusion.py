@@ -1,7 +1,7 @@
 from typing import Optional, Union
 import jax
 import jax.numpy as jnp
-from alphafold.model.geometry import Vec3Array, Rigid3Array, Rot3Array
+from salad.aflib.model.geometry import Vec3Array, Rigid3Array, Rot3Array
 
 from salad.modules.utils.geometry import index_mean, index_count
 

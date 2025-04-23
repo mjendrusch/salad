@@ -96,7 +96,6 @@ def get_hbond_map(
 def assign_dssp(coord: jnp.ndarray,
                 batch_index: jnp.ndarray,
                 mask: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    print(coord.shape)
     if coord.shape[0] < 5:
         # if coordinates are too short (< 3) for DSSP computation,
         # just return unknown DSSP (index = 3)

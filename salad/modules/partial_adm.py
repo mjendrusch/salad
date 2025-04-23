@@ -4,9 +4,9 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.model.layer_stack import layer_stack
-from alphafold.model.all_atom_multimer import atom37_to_atom14
-from alphafold.model.geometry import Vec3Array
+from salad.aflib.model.layer_stack import layer_stack
+from salad.aflib.model.all_atom_multimer import atom37_to_atom14
+from salad.aflib.model.geometry import Vec3Array
 
 from salad.modules.basic import (
     Linear, MLP, init_glorot, init_linear, init_zeros)

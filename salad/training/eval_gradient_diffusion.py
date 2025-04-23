@@ -13,9 +13,9 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.common.protein import to_pdb, Protein, from_pdb_string
-from alphafold.model.all_atom_multimer import atom14_to_atom37, get_atom37_mask
-from alphafold.model.geometry import Vec3Array, Rigid3Array, Rot3Array
+from salad.aflib.common.protein import to_pdb, Protein, from_pdb_string
+from salad.aflib.model.all_atom_multimer import atom14_to_atom37, get_atom37_mask
+from salad.aflib.model.geometry import Vec3Array, Rigid3Array, Rot3Array
 
 from salad.modules.gradient_diffusion import (
     StructureDiffusionInference, sigma_scale_cosine, sigma_scale_framediff)

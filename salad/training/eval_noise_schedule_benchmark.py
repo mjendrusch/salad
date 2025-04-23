@@ -13,9 +13,10 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.common.protein import to_pdb, Protein, from_pdb_string
-from alphafold.model.geometry import Vec3Array
-from alphafold.model.all_atom_multimer import atom14_to_atom37, atom37_to_atom14, get_atom37_mask
+from salad.aflib.common.protein import to_pdb, Protein, from_pdb_string
+from salad.aflib.model.geometry import Vec3Array
+from salad.aflib.model.all_atom_multimer import atom14_to_atom37, atom37_to_atom14, get_atom37_mask
+from salad.aflib.common.residue_constants import atom_types
 
 from salad.modules.noise_schedule_benchmark import (
     StructureDiffusionInference, sigma_scale_cosine, sigma_scale_framediff,
@@ -453,6 +454,48 @@ def parse_template(data):
     dmap = np.linalg.norm(cb[:, None] - cb[None, :], axis=-1)
     return aatype, dmap, omap, dmap_mask, chain_index
 
+def reorder_amino_acids(protein):
+    N = protein.atom_positions[:, atom_types.index("N")]
+    C = protein.atom_positions[:, atom_types.index("C")]
+    C_to_N = jnp.linalg.norm(C[:, None] - N[None, :], axis=-1)
+    C_to_N = jnp.where(jnp.eye(C.shape[0], dtype=jnp.bool_), jnp.inf, C_to_N)
+    C_to_N = C_to_N < 2.5
+    visited = np.zeros_like(protein.residue_index, dtype=np.bool_)
+    weight = np.ones_like(protein.residue_index)
+    next = np.argmax(C_to_N, axis=1)
+    stop = ~C_to_N.any(axis=1)
+    count = 0
+    index = 0
+    vinloop = []
+    while True:#not visited.all():
+        if index in vinloop:
+            if visited.all():
+                break
+            index = np.argmax((~visited) * (~stop))
+            vinloop = []
+        visited[index] = 1
+        vinloop.append(index)
+        weight[index] = count
+        count += 1
+        if stop[index]:
+            if visited.all():
+                break
+            index = np.argmax((~visited) * (~stop))
+            count += 1
+        else:
+            new_index = next[index]
+            index = new_index
+    reorder_index = np.argsort(weight)
+    new_protein = Protein(
+        atom_mask=protein.atom_mask[reorder_index],
+        atom_positions=protein.atom_positions[reorder_index],
+        residue_index=weight[reorder_index],
+        chain_index=np.zeros_like(weight),
+        aatype=protein.aatype[reorder_index],
+        b_factors=protein.b_factors[reorder_index]
+    )
+    return new_protein
+
 if __name__ == "__main__":
     opt = parse_options(
         "sample from a protein diffusion model.",
@@ -483,7 +526,8 @@ if __name__ == "__main__":
         cloud_std="none",
         depth_adjust="none",
         sym_threshold=0.0,
-        jax_seed=42
+        jax_seed=42,
+        order_agnostic="False"
     )
     dssp_mean = parse_dssp_mean(opt.dssp_mean)
     dssp = parse_dssp(opt.dssp)
@@ -527,6 +571,9 @@ if __name__ == "__main__":
     print("Setting up inputs...")
     if dssp is not None and not isinstance(dssp, Callable):
         num_aa = dssp.shape[0]
+        resi = np.arange(num_aa, dtype=np.int32)
+        base_chain = np.zeros_like(resi)
+        chain = np.zeros_like(resi)
     if dmap is not None:
         num_aa = dmap.shape[0]
         resi = np.arange(num_aa, dtype=np.int32)
@@ -546,6 +593,9 @@ if __name__ == "__main__":
     init_aa_gt = 20 * jnp.ones((num_aa,), dtype=jnp.int32)
     init_local = jnp.zeros((num_aa, config.local_size), dtype=jnp.float32)
     cloud_std_func = parse_cloud_std(opt.cloud_std)
+    if opt.order_agnostic == "True":
+        resi = -jnp.ones_like(resi)
+        chain = jnp.zeros_like(chain)
     print(f"Inputs set up in {time.time() - start:.3f} seconds.")
     print(f"Start generating {opt.num_designs} designs with {opt.num_steps} denoising steps...")
     os.makedirs(opt.out_path, exist_ok=True)
@@ -656,10 +706,14 @@ if __name__ == "__main__":
                             pdb_path = f"{opt.out_path}/result_{idx}_{idr}_{step}.pdb"
                         atom37 = atom14_to_atom37(data["atom_pos"], data["aatype"])
                         atom37_mask = get_atom37_mask(data["aatype"])
+                        residue_index = np.array(data["residue_index"])
                         protein = Protein(np.array(atom37), np.array(data["aatype"]),
-                                          np.array(atom37_mask), np.array(data["residue_index"]),
+                                          np.array(atom37_mask), residue_index,
                                           np.array(base_chain), maxprob[:, None] * np.array(
                                             np.ones_like(atom37_mask, dtype=jnp.float32)))
+                        # attempt to re-order amino acids
+                        if opt.order_agnostic == "True":
+                            protein = reorder_amino_acids(protein)
                         pdb_string = to_pdb(protein)
                         with open(pdb_path, "wt") as f:
                             f.write(pdb_string)

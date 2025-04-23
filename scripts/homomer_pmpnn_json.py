@@ -14,7 +14,7 @@ for name in os.listdir(input_path):
     basename = name.split(".")[0]
     # tie all positions across chains
     tied_positions = [
-        {all_chains[idy]: [idx + 1]  for idy in range(repeat)}
+        {all_chains[idy]: [idx + 1] for idy in range(repeat)}
         for idx in range(unit)
     ]
     result[basename] = tied_positions

@@ -8,11 +8,11 @@ import jax.numpy as jnp
 
 import haiku as hk
 
-from alphafold.common import residue_constants
-from alphafold.model.all_atom_multimer import (
+from salad.aflib.common import residue_constants
+from salad.aflib.model.all_atom_multimer import (
     make_transform_from_reference, torsion_angles_to_frames,
     frames_and_literature_positions_to_atom14_pos)
-from alphafold.model.geometry import Vec3Array, Rigid3Array
+from salad.aflib.model.geometry import Vec3Array, Rigid3Array
 
 from salad.modules.basic import MLP, Linear
 

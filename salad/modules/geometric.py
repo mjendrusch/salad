@@ -1,15 +1,15 @@
 from typing import Optional, Union, Any
 
-from alphafold.model.geometry import Vec3Array, Rigid3Array
+from salad.aflib.model.geometry import Vec3Array, Rigid3Array
 
 import jax
 import jax.numpy as jnp
 
 import haiku as hk
 
-from alphafold.model.all_atom_multimer import make_transform_from_reference
+from salad.aflib.model.all_atom_multimer import make_transform_from_reference
 
-from salad.modules.basic import Linear, MLP, init_glorot
+from salad.modules.basic import Linear, MLP, init_glorot, init_linear
 from salad.modules.transformer import Transition
 from salad.modules.utils.geometry import (
     distance_rbf, extract_aa_frames, extract_neighbours,
@@ -567,6 +567,100 @@ class SparseAttention(hk.Module):
 
         return out.astype(local.dtype)
 
+class DenseNonEquivariantPointAttention(hk.Module):
+    def __init__(self, size=32, heads=4,
+                 query_points=8, value_points=8,
+                 final_init="zeros", normalize=False,
+                 use_pair=False,
+                 name: Optional[str]="ada_point_attention"):
+        super().__init__(name=name)
+        self.size = size
+        self.heads = heads
+        self.query_points = query_points
+        self.value_points = value_points
+        self.final_init = final_init
+        self.use_pair = use_pair
+        self.normalize = normalize
+
+    def __call__(self, local, pos, resi, chain, batch, mask):
+        if self.normalize:
+            local = hk.LayerNorm([-1], True, True)(local)
+        def attention_component(x, size=self.size, heads=self.heads):
+            result = Linear(size * heads, initializer="linear")(x)
+            return result.reshape(*result.shape[:-1], heads, self.size)
+        def attention_point(x, pos, size=self.query_points, heads=self.heads):
+            result = Linear(size * heads * 3, initializer="zeros")(x)
+            result = result.reshape(*result.shape[:-1], heads, size, 3)
+            result += pos[:, 1][:, None, None]
+            return result
+        def fourier_resi_embedding(x, size=128):
+            val = x[..., None] / 10_000 ** (2 * jnp.arange(size // 2) / size)
+            return jnp.concatenate((jnp.sin(val), jnp.cos(val)), axis=-1)
+        def fourier_xyz_embedding(x, size=128):
+            val = x[..., None] / 10_000 ** (2 * jnp.arange(size // 2) / size)
+            return jnp.concatenate((jnp.sin(val), jnp.cos(val)), axis=-1).mean(axis=-2)
+        same_batch = batch[:, None] == batch[None, :]
+        pair_mask = mask[:, None] * mask[None, :] * same_batch
+        # xyz_embedding = fourier_xyz_embedding(
+        #     pos[:, 1], size=local.shape[-1])
+        query = hk.LayerNorm([-1], True, True)(attention_component(local))
+        key = hk.LayerNorm([-1], True, True)(attention_component(local)) # heads=1)
+        value = attention_component(local) # heads=1
+        query_points = attention_point(local, pos)
+        key_points = attention_point(local, pos) # heads=1
+        value_points = attention_point(local, pos) # heads=1
+        value = jnp.concatenate((value, value_points.reshape(*value.shape[:-1], -1)), axis=-1)
+        inner_product_attention = jnp.einsum("ihc,jhc->ijh", query * jnp.sqrt(1 / query.shape[-1]), key)
+        point_attention = -((query_points[:, None] - key_points[None, :]) ** 2).sum(axis=(-1, -2))
+        resi_dist = jnp.clip(resi[:, None] - resi[None, :], -32, 32)# / 64
+        other_chain = (chain[:, None] != chain[None, :])
+        # next_factor = jax.nn.softplus(
+        #     hk.get_parameter("resi_next_factor",
+        #                      (self.heads,),
+        #                      init=hk.initializers.Constant(jnp.log(jnp.exp(1.) - 1.))))
+        # prev_factor = jax.nn.softplus(
+        #     hk.get_parameter("resi_prev_factor",
+        #                      (self.heads,),
+        #                      init=hk.initializers.Constant(jnp.log(jnp.exp(1.) - 1.))))
+        # chain_bias = other_chain[..., None] * jax.nn.softplus(hk.get_parameter(
+        #     "chain_bias", (self.heads,),
+        #     init=hk.initializers.Constant(jnp.log(jnp.exp(1.) - 1.))))
+        # resi_attention = -jnp.where(resi_dist[..., None] >= 0,
+        #                             next_factor * abs(resi_dist)[..., None],
+        #                             prev_factor * abs(resi_dist)[..., None]) / 64 - chain_bias
+        # if self.use_pair:
+        ca = Vec3Array.from_array(10 * pos[:, 1])
+        dist = (ca[:, None] - ca[None, :]).norm()
+        dist = distance_rbf(dist, bins=16)
+        rel = (query_points[:, None] - key_points[None, :]).reshape(*dist.shape[:2], -1)
+        rdist = resi_dist + 32
+        rdist = jnp.where(other_chain, 65, rdist)
+        rdist = hk.get_parameter("resi_embedding", (66, self.size + 3 * self.value_points,), init=init_linear())[rdist]
+        pair = rdist + Linear(
+            self.size + 3 * self.value_points,
+            bias=False, initializer="linear")(jnp.concatenate((rel, dist), axis=-1))
+        bias = Linear(self.heads)(jnp.concatenate((rel, dist), axis=-1))
+        pair = pair[:, :, None, :] + value[None, :]
+        
+        w_C = jnp.sqrt(2 / (9 * self.query_points))
+
+        point_scale = hk.get_parameter(
+            "gamma", (self.heads,),
+            init=hk.initializers.Constant(jnp.log(jnp.exp(1.) - 1.))
+        )
+        # single pair operation
+        # rel = (pos[:, None, :, None] - pos[None, :, None, :]).reshape(local.shape[0], local.shape[0], -1)
+        # rel = Linear(value.shape[-1], bias=False, initializer="linear")(rel)[:, :, None, :]
+        point_scale = jax.nn.softplus(point_scale.reshape(1, 1, self.heads)) * w_C / 2
+        attn = (inner_product_attention + point_scale * point_attention + bias) * jnp.sqrt(1 / 3)
+        attn = jnp.where(pair_mask[..., None], attn, -1e9)
+        attn = jax.nn.softmax(attn, axis=1)
+        attn = jnp.where(pair_mask[..., None], attn, 0)
+        # add pair value
+        result = jnp.einsum("ijh,ijhc->ihc", attn, pair).reshape(local.shape[0], -1)
+        # gate = Linear(local.shape[-1], bias=False, initializer="relu")(local)
+        return Linear(local.shape[-1], bias=False, initializer="zeros")(result)# * jax.nn.gelu(gate) 
+
 class SparseSemiEquivariantPointAttention(hk.Module):
     def __init__(self, size=32, heads=4,
                  query_points=8, value_points=8,
@@ -647,6 +741,50 @@ class SparseSemiEquivariantPointAttention(hk.Module):
         )
 
         return out.astype(local.dtype)
+
+# # TODO
+# class PairFreeGeometricAttention(hk.Module):
+#     def __init__(self, size=32, heads=4, query_points=4,
+#                  value_points=8, final_init="zeros",
+#                  name = "pfg_attn"):
+#         super().__init__(name)
+#         self.size = size
+#         self.heads = heads + query_points
+#         self.value_points = value_points
+#         self.query_points = query_points
+#         self.final_init = final_init
+
+#     def __call__(self, local, pos, mask):
+#         if self.normalize:
+#             local = hk.LayerNorm([-1], True, True)(local)
+#         pos = Vec3Array.from_array(pos)
+#         frames, _ = extract_aa_frames(pos)
+#         qkv = Linear(
+#             self.heads * 3 * self.size,
+#             bias=False, name="qkv"
+#         )(
+#             local
+#         ).reshape(list(local.shape[:-1]) + [self.heads, 3 * self.size])
+#         q, k, v = jnp.split(qkv, 3, axis=-1)
+#         q = hk.LayerNorm([-1], True, True)(q)
+#         k = hk.LayerNorm([-1], True, True)(k)
+#         qkv_g = LinearToPoints(
+#             self.heads * (2 * self.query_points + self.value_points),
+#             name="qkv_global"
+#         )(local, frames)
+#         qkv_g = qkv_g.reshape(*qkv_g.shape[:-2], self.heads, -1, 3)
+#         q_g, k_g, v_g = jnp.split(
+#             qkv_g,
+#             [self.query_points, 2 * self.query_points],
+#             axis=-2
+#         )
+#         centers = pos[:, 1]
+#         dirs = (q_g - centers[:, None]).normalized()
+#         rels = k_g[None, :] - centers[:, None, None]
+#         dists = rels.norm()
+#         locs = dirs[:, None].dot(rels)
+#         self_gate = 
+#         pass # TODO
 
 class SparseInvariantPointAttention(hk.Module):
     def __init__(self, size=32, heads=4,

@@ -13,8 +13,8 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from alphafold.common.protein import to_pdb, Protein
-from alphafold.model.all_atom_multimer import atom14_to_atom37, get_atom37_mask
+from salad.aflib.common.protein import to_pdb, Protein
+from salad.aflib.model.all_atom_multimer import atom14_to_atom37, get_atom37_mask
 
 from salad.modules.noise_schedule_benchmark import (
     StructureDiffusionPredict, StructureDiffusionNoise, sigma_scale_cosine, sigma_scale_framediff)
@@ -72,9 +72,9 @@ class Screw:
         for _ in range(count - 2):
             self.rot_x.append(jnp.einsum("ac,cb->ab", self.rot_x[-1], self.rot))
 
-    def replicate_pos(self, first: jnp.ndarray):
+    def replicate_pos(self, first: jnp.ndarray, do_radius: bool):
         # replicate positions
-        first = first.at[:].add(jnp.array([self.radius, 0.0, 0.0]))
+        first = first.at[:].add(jnp.array([do_radius * self.radius, 0.0, 0.0]))
         replicates = []
         for idx in range(self.count):
             replicates.append(
@@ -95,14 +95,14 @@ class Screw:
         representative /= self.count
         return representative
 
-    def select_pos(self, x: jnp.ndarray):
+    def select_pos(self, x: jnp.ndarray, do_radius: bool):
         size = x.shape[0] // self.count
         idx = self.count // 2
         representative = jnp.einsum(
             "...c,cd->...d",
             cyclic_centering(x[idx * size:(idx + 1) * size]),
             self.rot_x[idx].T)
-        return representative
+        return jnp.where(do_radius, representative, x[idx * size:(idx + 1) * size])
 
     def replicate_features(self, data: jnp.ndarray):
         return jnp.concatenate(self.count * [data], axis=0)
@@ -200,11 +200,13 @@ def model_step(config, sym_op: Screw):
         predict = StructureDiffusionPredict(config)
         # apply gradients & symmetrise inputs
         pos = data["pos"]
+        ts = data["t_pos"][0]
+        do_radius = ts > 40.0
         if config.mix_output == "couple":
             mix_output = sym_op.couple_pos
         else:
             mix_output = sym_op.select_pos
-        pos = sym_op.replicate_pos(mix_output(pos))
+        pos = sym_op.replicate_pos(mix_output(pos, do_radius), do_radius)
         # TODO: apply gradients
         # pos = Declash().update_pos(pos, data["t_pos"])
         data["pos"] = pos
@@ -213,7 +215,7 @@ def model_step(config, sym_op: Screw):
         # symmetrise noise
         pos_noised = data["pos_noised"]
         if config.replicate_noise:
-            pos_noised = sym_op.replicate_pos(sym_op.select_pos(pos_noised))
+            pos_noised = sym_op.replicate_pos(sym_op.select_pos(pos_noised, do_radius), do_radius)
         data["pos_noised"] = pos_noised
         out, prev = predict(data, prev)
         # out["atom_pos"] = sym_op.replicate_pos(sym_op.select_pos(out["atom_pos"]))
@@ -407,11 +409,13 @@ if __name__ == "__main__":
         prev_threshold=1.0,
         cloud_std="none",
         mix_output="couple",
+        two_stage="False",
         sym_threshold=0.0,
         jax_seed=42
     )
     dssp_mean = parse_dssp_mean(opt.dssp_mean)
     dssp = parse_dssp(opt.dssp)
+    two_stage = opt.two_stage == "True"
 
     print(f"Running protein design with specification {opt.num_aa}")
     start = time.time()
@@ -509,9 +513,41 @@ if __name__ == "__main__":
                 pdb_string = to_pdb(protein)
                 sequence = decode_sequence(data["seq"])
                 print(sequence)
-                with open(f"{opt.out_path}/result_{idx}_{step}.pdb", "wt") as f:
+                two_stage_suffix = ""
+                if two_stage:
+                    two_stage_suffix = "_prep"
+                with open(f"{opt.out_path}/result_{idx}_{step}{two_stage_suffix}.pdb", "wt") as f:
                     f.write(pdb_string)
                 if step == out_steps[-1]:
                     break
+        if two_stage:
+            for step in range(100, opt.num_steps):
+                key, subkey = jax.random.split(key)
+                raw_t = 1 - step / opt.num_steps
+                scaled_t = parse_timescale(opt.timescale_pos)(raw_t)
+                data["t_pos"] = scaled_t * jnp.ones_like(data["t_pos"])
+                #if raw_t < opt.prev_threshold:
+                prev = init_prev
+                update, prev = model(params, subkey, data, prev)
+                data["pos"] = update["pos"]
+                data["seq"] = jnp.argmax(update["aa"], axis=-1)
+                maxprob = jax.nn.softmax(update["aa"], axis=-1).max(axis=-1)
+                data["atom_pos"] = update["atom_pos"]
+                data["aatype"] = update["aatype"]
+                if step in out_steps:
+                    atom37 = atom14_to_atom37(data["atom_pos"], data["aatype"])
+                    atom37_mask = get_atom37_mask(data["aatype"])
+                    atom37_mask *= data["mask"][:, None]
+                    protein = Protein(np.array(atom37), np.array(data["aatype"]),
+                                    np.array(atom37_mask), np.array(data["residue_index"]),
+                                    np.array(base_chain), maxprob[:, None] * np.array(
+                                        jnp.ones_like(atom37_mask, dtype=jnp.float32)))
+                    pdb_string = to_pdb(protein)
+                    sequence = decode_sequence(data["seq"])
+                    print(sequence)
+                    with open(f"{opt.out_path}/result_{idx}_{step}.pdb", "wt") as f:
+                        f.write(pdb_string)
+                    if step == out_steps[-1]:
+                        break
         print(f"Design {idx} generated in {time.time() - start:.3f} seconds.")
     print("All designs successfully generated.")
