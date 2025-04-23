@@ -67,7 +67,7 @@ def make_periodic_table():
     valence = sorb + porb
     return dict(
         names=PT_TABLE,
-        mask=has_entry,
+        mask=has_entry > 0,
         protons=protons,
         orbs=orbs,
         valence=valence
@@ -79,6 +79,6 @@ def index_atoms(atom_types):
 
 def apply_pt(atom_index):
     return {
-        key: value[periodic_table["has_entry"]].reshape(-1)[atom_index]
+        key: value[periodic_table["mask"]].reshape(-1, *value.shape[2:])[atom_index]
         for key, value in periodic_table.items()
     }

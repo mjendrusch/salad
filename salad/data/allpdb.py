@@ -166,7 +166,7 @@ class AtomPDB(AllPDB):
         # repeat per residue features across all
         # potential atoms (24 in atom24 format)
         def _irepeat(x):
-            np.repeat(x[:, None], 24, axis=1)
+            return np.repeat(x[:, None], 24, axis=1)
         # get an allpdb-npz assembly
         raw_data, chain = super().__getitem__("AA", index)
         mask = raw_data["atom_mask"]
@@ -174,7 +174,7 @@ class AtomPDB(AllPDB):
         atom_type = raw_data["atom_type"][mask]
         atom_name = raw_data["atom_name"][mask]
         atom_order_index = raw_data["atom_order_index"][mask]
-        residue_type = raw_data["residue_type"][mask]
+        residue_type = _irepeat(raw_data["residue_type"])[mask]
         # mark AA backbone atoms so a model can use this
         # information directly and learn priviledged
         # features for amino acids
@@ -921,6 +921,129 @@ class BatchedProteinPDBStream(IterableDataset):
     def __iter__(self):
         while True:
             yield self.next_item()
+
+class CroppedPDBStream(BatchedProteinPDBStream):
+    def __init__(self, path, start_date="01/01/90", cutoff_date="12/31/21",
+                 cutoff_resolution=4, size=1024, p_complex=0.5,
+                 seqres_aa="clusterSeqresAA", seqres_na="clusterSeqresNA",
+                 assembly=True, min_size=32, max_size=None, spatial_crop_monomer=0.0,
+                 legacy_repetitive_chains=True,
+                 base_dataset=ProteinPDB):
+        super().__init__(path, start_date, cutoff_date, cutoff_resolution,
+                         size, p_complex, seqres_aa, seqres_na, assembly,
+                         min_size, max_size, legacy_repetitive_chains,
+                         base_dataset)
+        self.spatial_crop_monomer = spatial_crop_monomer
+
+    def next_item(self) -> Dict[str, np.ndarray]:
+        while True:
+            (protein_data, chain), _ = self.get_next_pdb()
+            protein_data = slice_dict(protein_data, protein_data["all_atom_mask"][:, :3].all(axis=-1))
+            aa_gt = protein_data["aa_gt"]
+            item_size = aa_gt.shape[0]
+
+            # filter tiny entries
+            if item_size < self.min_size:
+                continue
+            
+            selected_chain = protein_data["chain_index"] == np.array([chain])[0]
+            selected_chain_size = selected_chain.sum()
+
+            # filter tiny chains
+            if selected_chain_size < self.min_size:
+                continue
+
+            # skip according to length (as done in AlphaFold)
+            skip_chance = 1 - max(min(selected_chain_size, 512), 256) / 512
+            if random.random() < skip_chance:
+                continue
+            # skip chains wrongly marked as proteins
+            if selected_chain_size == 0:
+                continue
+
+            # crop chain to maximum size
+            protein_data = self.crop(protein_data, chain)
+            protein_data["chain_index"] = numerical_chain_index(protein_data["chain_index"])
+            protein_data["batch_index"] = np.zeros_like(protein_data["chain_index"])
+            protein_data["seq_mask"] = protein_data["mask"] * (protein_data["aa_gt"] != 20)
+            protein_data["residue_mask"] = protein_data["seq_mask"] * protein_data["all_atom_mask"].any(axis=-1)
+            return protein_data
+
+    def crop(self, data, chain):
+        chain_index = data["chain_index"]
+        selected_chain = chain_index == np.array([chain])[0]
+        selected_chain_size = selected_chain.sum()
+        chains = np.unique(chain_index)
+        np.random.shuffle(chains)
+        num_chains = chains.shape[0]
+        # return a complex crop with probability p_complex
+        p_spatial = 0.5
+        if num_chains > 1 and random.random() < self.p_complex:
+            # print("complex crop...")
+            # interface spatial crop
+            if random.random() < p_spatial:
+                # print("spatial crop...")
+                ca = data["all_atom_positions"][:, 1]
+                sel_ca = ca[selected_chain]
+                other = ca[~selected_chain]
+                contact = (np.linalg.norm(sel_ca[:, None] - other[None, :], axis=-1) < 8).any(axis=1)
+                center = np.argmax(contact * np.random.rand(*contact.shape))
+                sel_ca = ca[selected_chain][center]
+                selected = np.argsort(np.linalg.norm(ca - sel_ca, axis=-1), axis=0)[:self.size]
+                mask = np.zeros_like(selected_chain)
+                mask[selected] = True
+                data = slice_dict(data, mask)
+            # contiguous chain crop
+            else:
+                # print("segment crop...")
+                budget = self.size
+                mask = np.zeros_like(selected_chain, dtype=np.bool_)
+                for idx, chain in enumerate(chains):
+                    # print("budged", budget)
+                    # define the mask of residues for the chain
+                    chain_slice = chain_index == chain
+                    # get the length of the chain
+                    chain_length = chain_slice.astype(np.int32).sum()
+                    # compute the minimum and maximum lengths
+                    # of a chain-crop
+                    min_length = max(min(min(16, chain_length), budget), 0)
+                    max_length = max(min(chain_length, budget), 0)
+                    if (max_length < 16) or (min_length == max_length):
+                        # print("failure lengths", chain_length, min_length, max_length)
+                        break
+                    # sample a random length in this range and define
+                    # a random crop
+                    length = random.randint(min_length, max_length)
+                    # if this is the last iteration, make sure to fill
+                    # the batch
+                    if idx == len(chains) - 1:
+                        length = min(chain_length, budget - chain_length)
+                    start = random.randint(0, chain_length - length)
+                    end = start + length
+                    # add the defined crop to the selection mask
+                    mask[np.nonzero(chain_slice)[0][start:end]] = True
+                    # and reduce the remaining budget by its length
+                    budget -= length
+                data = slice_dict(data, mask)                
+        # otherwise, return a contiguous crop of a single chain
+        else:
+            # print("monomer crop...")
+            data = slice_dict(data, selected_chain)
+            if selected_chain_size > self.size:
+                if random.random() < self.spatial_crop_monomer:
+                    residue = random.randrange(0, selected_chain_size)
+                    ca = data["pos"][:, 1]
+                    residue_ca = ca[residue]
+                    nearest = np.argsort(np.linalg.norm(residue_ca - ca, axis=-1), axis=0)[:self.size]
+                    data = slice_dict(data, nearest)
+                else:
+                    start = random.randrange(0, selected_chain_size - self.size)
+                    end = start + self.size
+                    data = slice_dict(data, slice(start, end))
+            # print("start size", selected_chain_size)
+        data = pad_dict(data, self.size)
+        # print("crop size", data["mask"].sum())
+        return data
 
 class BinderPDBStream(IterableDataset):
     def __init__(self, path, start_date="01/01/90",
