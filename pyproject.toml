@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "salad"
-version = "0.1.0"
+version = "0.1.1"
 description = "Protein structure generation with denoising models."
 readme = "README.md"
 license = { file = "LICENSE" }

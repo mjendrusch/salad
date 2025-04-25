@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
   name="salad",
-  version="0.0.1",
+  version="0.1.1",
   author="Michael Jendrusch",
   author_email="michael.jendrusch@embl.de",
   description="protein structure generation with sparse denoising models.",
