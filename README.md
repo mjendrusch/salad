@@ -34,7 +34,7 @@ Like previous models, salad models can generate protein structures for a variety
 * [shape-conditioned protein generation](#shape-conditioned-protein-generation)
 * [multi-state protein design](#multi-state-design)
 
-While unconditional protein generation, as well as protein motif scaffolding are fairly standard for current protein structure generators, salad reaches larger proteins up to 1,000 amino acids and can successfully perform on less standard tasks, such as multi-state protein design, shape-conditioned protein generation and repeat protein design. The full extent of what salad can do is described in our [manuscript](TODO).
+While unconditional protein generation, as well as protein motif scaffolding are fairly standard for current protein structure generators, salad reaches larger proteins up to 1,000 amino acids and can successfully perform on less standard tasks, such as multi-state protein design, shape-conditioned protein generation and repeat protein design. The full extent of what salad can do is described in our [manuscript](https://www.biorxiv.org/content/10.1101/2025.01.31.635780v1.abstract).
 
 ## What's in this repository?
 
@@ -126,7 +126,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
   - [training salad models](#training-salad-models)
 
 # Roadmap
-While the models and code provided here are functional and reflect the state of salad we used for our [manuscript](TODO), we realize that there is a lot of room for improvement. As it stands, salad is not as user-friendly as it probably could be and the set of its features is neither a strict superset nor a strict subset of the features provided by other methods for protein structure generation. With this in mind, we provide a roadmap of improvements and features we would like to implement over the following months to make salad as good of a protein design tool as we can.
+While the models and code provided here are functional and reflect the state of salad we used for our [manuscript](https://www.biorxiv.org/content/10.1101/2025.01.31.635780v1.abstract), we realize that there is a lot of room for improvement. As it stands, salad is not as user-friendly as it probably could be and the set of its features is neither a strict superset nor a strict subset of the features provided by other methods for protein structure generation. With this in mind, we provide a roadmap of improvements and features we would like to implement over the following months to make salad as good of a protein design tool as we can.
 
 ## quality of life improvements
 - [ ] provide Colab notebooks
