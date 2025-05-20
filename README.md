@@ -40,7 +40,12 @@ While unconditional protein generation, as well as protein motif scaffolding are
 
 This repository contains the code for training and evaluating the
 models described in "Efficient protein structure generation with
-sparse denoising models".
+sparse denoising models":
+- autoencoders are implemented in `salad.modulues.structure_autoencoder`.
+- denoising models are implemented in `salad.modules.noise_schedule_benchmark`.
+  - noise schedules in `salad.modules.utils.diffusion`
+- features and attention modules for geometric data are implemented in `salad.modules.geometric`.
+- utilities for working with sparse geometric data are implemented in `salad.modules.utils.geometry`.
 
 In addition, it provides modules for loading PDB data and implementing
 sparse protein models.
