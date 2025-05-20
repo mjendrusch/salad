@@ -1,3 +1,8 @@
+"""This module contains code for decoding protein structures
+from pairwise residue distances.
+
+This module was not used in the salad manuscript."""
+
 from typing import Optional
 
 import jax

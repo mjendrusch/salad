@@ -16,7 +16,7 @@ from salad.aflib.model.all_atom_multimer import (
     atom37_to_atom14, atom14_to_atom37, get_atom14_mask, get_atom37_mask)
 from salad.aflib.model.geometry import Vec3Array
 
-from salad.modules.latent_diffusion import LatentDiffusionInference
+from salad.modules.experimental.latent_diffusion import LatentDiffusionInference
 from salad.modules.config import latent_diffusion as config_choices
 from salad.data.allpdb import slice_dict
 from salad.training.eval_noise_schedule_benchmark import parse_num_aa

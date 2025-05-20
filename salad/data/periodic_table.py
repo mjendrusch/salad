@@ -1,3 +1,8 @@
+"""This module contains constants for element types.
+
+Not used in the manuscript.
+"""
+
 import numpy as np
 
 # element names in the periodic table

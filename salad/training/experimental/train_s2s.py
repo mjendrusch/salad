@@ -11,19 +11,23 @@ from torch.utils.tensorboard import SummaryWriter
 
 from flexloop.simple_loop import (
     training, log, load_loop_state, update_step, valid_step, rebatch_call, State)
-from salad.modules.condition_to_sequence import C2S
-from salad.modules.config import condition_to_sequence as config_choices
+from salad.modules.experimental.structure_to_sequence import S2S, S2SEfficient
+from salad.modules.config import structure_to_sequence as config_choices
 from flexloop.utils import parse_options
 from flexloop.loop import cast_float
 
 def model_step(config, rebatch=1, is_training=True):
-    module = C2S
+    module = S2S
+    if config.decoder_depth:
+        module = S2SEfficient
     if not is_training:
         config = deepcopy(config)
         config.eval = True
     def step(data):
         data = jax.tree_util.tree_map(lambda x: jnp.array(x), data)
         data = cast_float(data, dtype=jnp.float32)
+        # FIXME: sharded model?
+        # loss, out = rebatch_call(module(config), rebatch=rebatch)
         loss, out = rebatch_call(
             module(config), rebatch=rebatch)(data)
         res_dict = {
@@ -127,7 +131,7 @@ if __name__ == "__main__":
         multigpu = False
         NUM_DEVICES = 1
     path = opt.path
-    path = f"{path}/salad/c2s-{opt.config}-{opt.num_aa}-{opt.suffix}"
+    path = f"{path}/salad/adm-{opt.config}-{opt.num_aa}-{opt.suffix}"
     writer = SummaryWriter(path)
 
     print("Attempting to load dataset...")
@@ -160,6 +164,7 @@ if __name__ == "__main__":
     config = getattr(config_choices, opt.config)
     key = jax.random.PRNGKey(opt.jax_seed)
     rebatch = opt.rebatch
+    # FIXME: sharded rebatch?
     init, step = transformed = hk.transform(model_step(config, rebatch=rebatch, is_training=True))
     _, valid = hk.transform(model_step(config, rebatch=rebatch, is_training=False))
 
@@ -213,6 +218,12 @@ if __name__ == "__main__":
         logger=log())
     print("Recovering previous state, if available...")
     loop_state = load_loop_state(path) or loop_state
+    # FIXME: explicit replication
+    # if multigpu:
+    #     loop_state = replicate_loop_state(loop_state)
+    # FIXME: explicit replication
+    # if multigpu:
+    #     opt_state = jax.device_put_replicated(opt_state)
     print("Starting training...")
     print(f"Log files and tensorboard records will be written to {path}")
     training_loop(writer, loop_state)

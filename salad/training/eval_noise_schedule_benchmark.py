@@ -24,7 +24,7 @@ from salad.modules.noise_schedule_benchmark import (
 from salad.modules.config import noise_schedule_benchmark as config_choices
 from flexloop.utils import parse_options
 from salad.modules.utils.geometry import extract_aa_frames
-from salad.training.eval_s2s import decode_sequence
+from salad.data.allpdb import decode_sequence
 
 def model_step(config):
     module = StructureDiffusionInference
@@ -107,54 +107,6 @@ def random_dssp_mean(max_loop=0.5):
     sheet = 1 - helix
     loop = np.random.random() * max_loop
     return np.array([loop, (1 - loop) * helix, (1 - loop) * sheet])
-
-# def random_dssp(count, p=0.1):
-#     loop, helix, sheet = random_dssp_mean()
-#     helix = int(helix * count)
-#     if helix < 6:
-#         helix = 0
-#     min_helix_count = 1
-#     max_helix_count = helix // 6
-#     min_helix_count = min(min_helix_count, max_helix_count)
-#     if helix == 0:
-#         num_helices = 0
-#     elif min_helix_count == max_helix_count:
-#         num_helices = min_helix_count
-#     else:
-#         num_helices = np.random.randint(min_helix_count, max_helix_count)
-#     sheet = int(sheet * count)
-#     if sheet < 8:
-#         sheet = 0
-#     loop = count - (helix + sheet)
-#     min_sheet_count = 2
-#     max_sheet_count = sheet // 4
-#     if sheet == 0:
-#         num_sheets = 0
-#     elif min_sheet_count == max_sheet_count:
-#         num_sheets = min_sheet_count
-#     else:
-#         num_sheets = np.random.randint(min_sheet_count, max_sheet_count)
-#     helices = [6 for _ in range(num_helices)] 
-#     sheets = [4 for _ in range(num_sheets)]
-#     loops = [0 for _ in range(num_helices + num_sheets + 1)]
-#     while sum(sheets) < sheet:
-#         index = np.random.randint(num_sheets)
-#         sheets[index] += 1
-#     while sum(helices) < helix:
-#         index = np.random.randint(num_helices)
-#         helices[index] += 1
-#     while sum(loops) < loop:
-#         index = np.random.randint(0, len(loops))
-#         loops[index] += 1
-#     helices = ["_" + "H" * (num - 2) + "_" if random.random() > p else "_" * num for num in helices]
-#     sheets = ["_" + "E" * (num - 2) + "_" if random.random() > p else "_" * num for num in sheets]
-#     loops = ["L" * num if random.random() > p else "_" * num for num in loops]
-#     structured = helices + sheets
-#     random.shuffle(structured)
-#     dssp = loops[0] + "".join([s + l for s, l in zip(structured, loops[1:])])
-#     print(dssp)
-#     dssp = parse_dssp(dssp)
-#     return dssp
 
 def random_dssp(count, p=0.5):
     loop, helix, sheet = random_dssp_mean()

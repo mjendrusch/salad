@@ -1,3 +1,5 @@
+# DEPRECATED: this is an old-style training script
+
 from torch.multiprocessing import set_start_method, get_start_method
 if __name__ == "__main__":
   set_start_method('spawn', force=True)
@@ -163,10 +165,10 @@ if __name__ == "__main__":
     )
     from flexloop.data import BatchDistribution
     from flexloop.utils import parse_options
-    from salad.data.allpdb import BatchedProteinPDB, ProteinPDBSample, ProteinPDB
+    from salad.data.allpdb import BatchedProteinPDBStream, ProteinPDBSample, ProteinPDB
 
     import salad.modules.config.nuadm as configuration
-    from salad.modules.nuadm import NuADM
+    from salad.modules.experimental.nuadm import NuADM
 
     NUM_DEVICES = len(jax.devices())
     opt = parse_options(
@@ -209,33 +211,27 @@ if __name__ == "__main__":
         config.block_type = "edm"
     train = train_step(config, rebatch=opt.rebatch)
 
-    msazero_data = BatchedProteinPDB(
+    msazero_data = BatchedProteinPDBStream(
         f"{opt.data_path}/allpdb/",
-        cutoff_date="12/31/20", # FIXME: end in 2020
+        cutoff_date="12/31/20",
         cutoff_resolution=3.5,
         size=opt.num_aa,
         p_complex=opt.p_complex,
-        # FIXME: old clustering
         seqres_aa="clusterSeqresAA",
         seqres_na="clusterSeqresNA",
-        # FIXME: do not use assemblies
-        assembly=False,
-        # FIXME: accept / reject proportional to 1/cluster size
+        assembly=True,
         base_dataset=ProteinPDB # Sample
     )
-    msazero_valid = BatchedProteinPDB(
+    msazero_valid = BatchedProteinPDBStream(
         f"{opt.data_path}/allpdb/",
         start_date="01/01/21",
         cutoff_date="12/31/23",
         cutoff_resolution=3.5,
         size=opt.num_aa,
         p_complex=opt.p_complex,
-        # FIXME: old clustering
         seqres_aa="clusterSeqresAA",
         seqres_na="clusterSeqresNA",
-        # FIXME: do not use assemblies
-        assembly=False,
-        # FIXME: accept / reject proportional to 1/cluster size
+        assembly=True,
         base_dataset=ProteinPDB # Sample
     )
 

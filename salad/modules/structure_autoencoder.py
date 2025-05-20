@@ -1,3 +1,5 @@
+"""This module implements the protein structure autoencoders from the manuscript."""
+
 from typing import Optional
 
 import jax
@@ -35,12 +37,14 @@ from salad.modules.geometric import (
 )
 
 class StructureAutoencoder(hk.Module):
+    """Wrapper class for protein structure autoencoder training"""
     def __init__(self, config,
                  name: Optional[str] = "structure_autoencoder"):
         super().__init__(name)
         self.config = config
 
     def prepare_data(self, data):
+        """Prepare model inputs from a batch of data."""
         pos = data["all_atom_positions"]
         atom_mask = data["all_atom_mask"]
         chain = data["chain_index"]
@@ -95,6 +99,7 @@ class StructureAutoencoder(hk.Module):
         c = self.config
         encoder = Encoder(c)
         decoder = Decoder(c)
+        # optionally use VQ
         if c.codebook_size:
             vq = VQState if c.state else VQ
             mapped_axes = []
@@ -103,10 +108,9 @@ class StructureAutoencoder(hk.Module):
             if c.multigpu:
                 mapped_axes.append("batch_ax")
             quantize = vq(c.codebook_size, c.affine, mapped_axes=mapped_axes)
+        # or FSQ (not used in the manuscript)
         if c.fsq:
             fsq = FSQ()
-        if c.hallucination:
-            error = Error(c)
 
         # convert coordinates, center & add encoded features
         data.update(self.prepare_data(data))
@@ -116,7 +120,7 @@ class StructureAutoencoder(hk.Module):
             data["clean_latent"] = clean_latent
             data.update(self.prepare_input_diffusion(data))
         latent = encoder(data)
-        # optionally apply noise to the latents
+        # optionally apply noise to the latents (not used in the manuscript)
         if c.latent_diffusion:
             # NOTE: constraining latents is necessary for diffusion to work
             # with a trainable encoder. Otherwise, the model learns to cheat.
@@ -131,6 +135,7 @@ class StructureAutoencoder(hk.Module):
                 data["skip_latent"] = latent / jnp.maximum(1 + time[:, None] ** 2, 1e-3)
                 latent = latent / jnp.maximum(jnp.sqrt(1 + time[:, None] ** 2), 1e-3)
             data["time"] = time
+        # optionally apply VQ or FSQ
         if c.codebook_size:
             if c.state:
                 latent, codebook_index, codebook_losses, state_update = quantize(latent, data["mask"])
@@ -140,11 +145,8 @@ class StructureAutoencoder(hk.Module):
         if c.fsq:
             latent, _ = fsq(latent)
         data["latent"] = latent
-        if c.hallucination:
-            latent = self.add_noise(latent)
-            data["latent"] = jax.lax.stop_gradient(latent)
 
-        # self-conditioning
+        # decoder recycling
         def iteration_body(i, prev):
             result = decoder(data, prev)
             prev = dict(
@@ -163,15 +165,9 @@ class StructureAutoencoder(hk.Module):
                 count = jax.random.randint(hk.next_rng_key(), (), 0, 4)
             prev = jax.lax.stop_gradient(hk.fori_loop(0, count, iteration_body, prev))
         result = decoder(data, prev)
-        if c.hallucination:
-            result.update(error(latent, result))
         if c.codebook_size:
             result["codebook_losses"] = codebook_losses
         total, losses = decoder.loss(data, result)
-        if c.hallucination:
-            error_total, error_losses = error.loss(data, result)
-            total += error_total
-            losses.update(error_losses)
         out_dict = dict(
             results=result,
             losses=losses
@@ -181,12 +177,20 @@ class StructureAutoencoder(hk.Module):
         return total, out_dict
 
     def add_noise(self, latent, batch):
+        """Add noise to latents.
+        
+        Not used in the manuscript.
+        """
         noise_level = jax.random.normal(hk.next_rng_key(), batch.shape)[batch]
         noise_level = jnp.exp(noise_level)
         noise = jax.random.normal(hk.next_rng_key(), latent.shape) * noise_level
         return latent + noise
 
     def prepare_input_diffusion(self, data):
+        """When training as a structure diffusion model, prepare model input.
+        
+        Not used in the manuscript.
+        """
         c = self.config
         batch = data["batch_index"]
         pos = data["pos_input"]
@@ -202,6 +206,10 @@ class StructureAutoencoder(hk.Module):
         return dict(pos_input=pos, time=time)
 
     def prepare_latent_diffusion(self, latent, data):
+        """When training as a latent diffusion model, prepare model input.
+        
+        Not used in the manuscript.
+        """
         c = self.config
         batch = data["batch_index"]
         noise = jax.random.normal(hk.next_rng_key(), latent.shape)
@@ -222,6 +230,10 @@ class StructureAutoencoder(hk.Module):
         return latent, time
 
 class StructureDecoder(StructureAutoencoder):
+    """Wrapper class for training a structure autoencoder with a fixed encoder.
+    
+    Not used in the manuscript.
+    """
     def __init__(self, config,
                  name: Optional[str] = "structure_decoder"):
         super().__init__(name)
@@ -229,18 +241,17 @@ class StructureDecoder(StructureAutoencoder):
 
     def __call__(self, data):
         c = self.config
+        # fixed encoder
         encoder = assign_state(c, c.param_path)
+        # learnable decoder
         decoder = Decoder(c)
 
         data.update(self.prepare_data(data))
         latent, codebook_index = encoder(hk.next_rng_key(), data)
         latent = jax.lax.stop_gradient(latent)
         data["latent"] = latent
-        if c.hallucination:
-            latent = self.add_noise(latent)
-            data["latent"] = jax.lax.stop_gradient(latent)
 
-        # self-conditioning
+        # decoder recycling
         def iteration_body(i, prev):
             result = decoder(data, prev)
             prev = dict(
@@ -259,13 +270,7 @@ class StructureDecoder(StructureAutoencoder):
                 count = jax.random.randint(hk.next_rng_key(), (), 0, 4)
             prev = jax.lax.stop_gradient(hk.fori_loop(0, count, iteration_body, prev))
         result = decoder(data, prev)
-        if c.hallucination:
-            result.update(error(latent, result))
         total, losses = decoder.loss(data, result)
-        if c.hallucination:
-            error_total, error_losses = error.loss(data, result)
-            total += error_total
-            losses.update(error_losses)
         out_dict = dict(
             results=result,
             losses=losses
@@ -273,12 +278,14 @@ class StructureDecoder(StructureAutoencoder):
         return total, out_dict
 
     def add_noise(self, latent, batch):
+        """Add noise to latents."""
         noise_level = jax.random.normal(hk.next_rng_key(), batch.shape)[batch]
         noise_level = jnp.exp(noise_level)
         noise = jax.random.normal(hk.next_rng_key(), latent.shape) * noise_level
         return latent + noise
 
 class StructureAutoencoderInference(StructureAutoencoder):
+    """Wrapper class for autoencoder evaluation."""
     def __call__(self, data):
         c = self.config
         encoder = Encoder(c)
@@ -312,7 +319,7 @@ class StructureAutoencoderInference(StructureAutoencoder):
             latent, codebook_index, _ = quantize(latent, data["mask"])
         data["latent"] = latent
 
-        # self-conditioning
+        # decoder recycling
         def iteration_body(i, prev):
             result = decoder(data, prev)
             prev = dict(
@@ -330,12 +337,14 @@ class StructureAutoencoderInference(StructureAutoencoder):
         result = decoder(data, prev)
 
         mask = data["mask"]
+        # compute decoder perplexity and sequence recovery
         aa_nll = -(result["aa"] * jax.nn.one_hot(data["aa_gt"], 20, axis=-1)).sum(axis=-1)
         aa_nll = jnp.where(mask, aa_nll, 0)
         aa_nll = aa_nll.sum() / jnp.maximum(mask.sum(), 1)
         perplexity = jnp.exp(aa_nll)
         aatype = jnp.argmax(result["aa"], axis=-1)
         recovery = ((data["aa_gt"] == aatype) * mask).sum() / mask.sum()
+        # compute reconstruction RMSD, LDDT and TM score
         pos_gt = data["pos_gt"]
         pos = result["pos"]
         pos_gt = index_align(pos_gt, pos, data["batch_index"], mask)
@@ -354,6 +363,7 @@ class StructureAutoencoderInference(StructureAutoencoder):
         in_threshold = (derr[..., None] < threshold) * pair_mask[..., None]
         lddt_ca = (in_threshold.sum(axis=1) / jnp.maximum(pair_mask[..., None].sum(axis=1), 1)).mean(axis=-1)
         lddt_ca = jnp.where(mask, lddt_ca, 0)
+        # compute AlphaFold structural violation loss
         res_mask = data["mask"]
         pred_mask = get_atom14_mask(aatype) * res_mask[:, None]
         violation, _ = violation_loss(aatype,
@@ -390,6 +400,7 @@ class StructureAutoencoderInference(StructureAutoencoder):
         return out
     
 class StructureDecoderInference(StructureDecoder):
+    """Wrapper class for StructureDecoder evaluation."""
     def __call__(self, data):
         c = self.config
         encoder = assign_state(c, c.param_path)
@@ -400,7 +411,7 @@ class StructureDecoderInference(StructureDecoder):
         latent = jax.lax.stop_gradient(latent)
         data["latent"] = latent
 
-        # self-conditioning
+        # decoder recycling
         def iteration_body(i, prev):
             result = decoder(data, prev)
             prev = dict(
@@ -417,6 +428,7 @@ class StructureDecoderInference(StructureDecoder):
         prev = jax.lax.stop_gradient(hk.fori_loop(0, count, iteration_body, prev))
         result = decoder(data, prev)
 
+        # compute amino acid prediction perplexity, sequence recovery
         mask = data["mask"]
         aa_nll = -(result["aa"] * jax.nn.one_hot(data["aa_gt"], 20, axis=-1)).sum(axis=-1)
         aa_nll = jnp.where(mask, aa_nll, 0)
@@ -424,6 +436,7 @@ class StructureDecoderInference(StructureDecoder):
         perplexity = jnp.exp(aa_nll)
         aatype = jnp.argmax(result["aa"], axis=-1)
         recovery = ((data["aa_gt"] == aatype) * mask).sum() / mask.sum()
+        # compute reconstruction RMSD, LDDT and TM score
         pos_gt = data["pos_gt"]
         pos = result["pos"]
         pos_gt = index_align(pos_gt, pos, data["batch_index"], mask)
@@ -459,6 +472,7 @@ class StructureDecoderInference(StructureDecoder):
         return out
     
 class AssignState(StructureAutoencoder):
+    """Fixed encoder wrapper."""
     def __call__(self, data):
         c = self.config
         encoder = Encoder(c)
@@ -473,6 +487,7 @@ class AssignState(StructureAutoencoder):
         return latent, None
 
 def assign_state(config, param_path):
+    """Construct a fixed encoder from a model configuration and parameter path."""
     import pickle
     apply = hk.transform(lambda x: AssignState(config)(x)).apply
     with open(param_path, "rb") as f:
@@ -482,6 +497,7 @@ def assign_state(config, param_path):
     return inner
 
 class AADecoderBlock(hk.Module):
+    """Amino acid sequence decodder block."""
     def __init__(self, config, name: Optional[str] = "aa_decoder_block"):
         super().__init__(name)
         self.config = config
@@ -509,6 +525,7 @@ class AADecoderBlock(hk.Module):
         return features
 
 class AADecoderStack(hk.Module):
+    """Amino acid sequence decoder stack."""
     def __init__(self, config, depth=None, name: Optional[str] = "aa_decoder_stack"):
         super().__init__(name)
         self.config = config
@@ -532,6 +549,7 @@ class AADecoderStack(hk.Module):
         return local
 
 class EncoderBlock(hk.Module):
+    """Encoder block."""
     def __init__(self, config, name: Optional[str] = "encoder_block"):
         super().__init__(name)
         self.config = config
@@ -560,6 +578,7 @@ class EncoderBlock(hk.Module):
         return features
 
 class EncoderStack(hk.Module):
+    """Encoder stack."""
     def __init__(self, config, depth=None, name: Optional[str] = "encoder_stack"):
         super().__init__(name)
         self.config = config
@@ -581,43 +600,8 @@ class EncoderStack(hk.Module):
         local = hk.LayerNorm([-1], True, True)(stack(local))
         return local
 
-# TODO TODO TODO TODO
-class Error(hk.Module):
-    def __init__(self, config, name: Optional[str] = "error"):
-        super().__init__(name)
-        self.config = config
-
-    def __call__(self, data):
-        c = self.config
-        local, pos, resi, chain, batch, mask = self.prepare_features(data)
-        local = EncoderStack(c, depth=c.error_depth, name="error_stack")(
-            local, pos, resi, chain, batch, mask)
-        local = hk.LayerNorm([-1], True, True)(local)
-        InnerDistogram(c)(local, resi, chain, batch, sup_neighbours)
-        return Linear(20, initializer=init_linear(), bias=False)(local)
-    
-    def prepare_features(self, data):
-        c = self.config
-        pos = data["pos_gt"]
-        resi = data["residue_index"]
-        chain = data["chain_index"]
-        batch = data["batch_index"]
-        mask = data["mask"]
-        pos = Vec3Array.from_array(pos)
-        neighbours = extract_neighbours(5, 5, 0)(
-            pos, resi, chain, batch, mask)
-        local_features = init_local_features(c)(
-            pos, neighbours, resi, chain, batch, mask)
-        local = MLP(
-            4 * c.local_size, c.local_size,
-            activation=jax.nn.gelu,
-            bias=False,
-            final_init=init_linear())(local_features)
-        local = hk.LayerNorm([-1], True, True)(local)
-
-        return local, pos.to_array(), resi, chain, batch, mask
-
 class Encoder(hk.Module):
+    """Equivariant protein structure encoder."""
     def __init__(self, config, name: Optional[str] = "encoder"):
         super().__init__(name)
         self.config = config
@@ -633,6 +617,7 @@ class Encoder(hk.Module):
         return Linear(c.latent_size, initializer=init_linear(), bias=False)(local)
     
     def prepare_features(self, data):
+        """Construct encoder input features from a batch of data."""
         c = self.config
         pos = data["pos_input"]
         if c.noise_encoder and not c.eval:
@@ -661,6 +646,7 @@ class Encoder(hk.Module):
         return local, pos.to_array(), resi, chain, batch, mask
 
 class Decoder(hk.Module):
+    """Protein structure decoder."""
     def __init__(self, config, name: Optional[str] = "diffusion"):
         super().__init__(name)
         self.config = config
@@ -668,6 +654,7 @@ class Decoder(hk.Module):
 
     def __call__(self, data, prev):
         c = self.config
+        # select a decoder block (equivariant or non-equivariant)
         decoder_module = DecoderStack
         if c.equivariance == "nonequivariant":
             decoder_module = NonEquivariantDecoderStack
@@ -677,6 +664,7 @@ class Decoder(hk.Module):
             self.decoder_block = SemiEquivariantDecoderBlock
         decoder_stack = decoder_module(c, self.decoder_block)
         aa_decoder = AADecoder(c)
+        # run the decoder
         local, pos, resi, chain, batch, mask = self.prepare_features(data, prev)
         sup_neighbours = get_random_neighbours(c.fape_neighbours)(
             Vec3Array.from_array(data["pos_gt"][:, -1]), batch, mask)
@@ -729,6 +717,7 @@ class Decoder(hk.Module):
         return result
 
     def init_prev(self, data):
+        """Initialize recycling inputs."""
         c = self.config
         return dict(
             pos = data["pos"],
@@ -736,7 +725,9 @@ class Decoder(hk.Module):
         )
 
     def prepare_features(self, data, prev):
+        """Construct Decoder input features from a batch of data and recycling information."""
         c = self.config
+        # directly use the recycled positions as a starting point
         pos = prev["pos"]
         resi = data["residue_index"]
         chain = data["chain_index"]
@@ -750,6 +741,7 @@ class Decoder(hk.Module):
             distance_rbf(local_pos.norm(), 0.0, 22.0).reshape(local_pos.shape[0], -1),
             latent
         ]
+        # add time embedding if trained as a diffusoin model (not used in manuscript)
         if c.time_embedding and c.latent_diffusion and "time" in data:
             time = data["time"]
             time = distance_rbf(time, 0, 80.0, bins=200)
@@ -767,6 +759,7 @@ class Decoder(hk.Module):
         return local, pos, resi, chain, batch, mask
 
     def loss(self, data, result):
+        """Compute Decoder losses from the input data and Decoder results."""
         c = self.config
         resi = data["residue_index"]
         chain = data["chain_index"]
@@ -876,16 +869,8 @@ class Decoder(hk.Module):
                 total += c.codebook_loss_scale * (cl["codebook"] + cl["unassigned"])
             total += c.codebook_loss_scale * c.codebook_b * cl["commitment"]
 
-        # additional denoising losses
+        # additional denoising losses (not used in manuscript)
         if (c.input_diffusion or c.latent_diffusion) and c.latent_loss_scale:
-            # sqrt_alpha = jnp.sqrt(1 - data["time"] ** 2 + 1e-6)[:, None]
-            # sqrt_snr = sqrt_alpha / (data["time"] + 1e-3)[:, None]
-            # noise_gt = (data["latent"] / sqrt_alpha - data["clean_latent"]) * sqrt_snr
-            # noise_gt = jax.lax.stop_gradient(noise_gt)
-            # predicted_latent = result["predicted_latent"]
-            # noise_predicted = (jax.lax.stop_gradient(data["latent"]) / sqrt_alpha - predicted_latent) * sqrt_snr
-            # raw_loss = ((noise_gt - noise_predicted) ** 2).mean(axis=-1)
-            # unweighted loss
             raw_loss = ((data["clean_latent"] - result["predicted_latent"]) ** 2).mean(axis=-1)
             if c.vp_diffusion:
                 weighted_loss = (jnp.where(mask, raw_loss, 0) * base_weight).sum()
@@ -895,6 +880,7 @@ class Decoder(hk.Module):
                 weighted_loss = (jnp.where(mask, raw_loss, 0) * base_weight).sum()
             losses["latent"] = weighted_loss
             total += c.latent_loss_scale * weighted_loss
+        # AlphaFold violation loss. (not used in manuscript)
         if c.violation_scale:
             res_mask = data["mask"]
             pred_mask = get_atom14_mask(data["aa_gt"]) * res_mask[:, None]
@@ -914,6 +900,7 @@ class Decoder(hk.Module):
         return total, losses
 
 def get_angle_positions(aa_gt, local, pos):
+    """Construct side chain atom positions from amino acid sequence and features."""
     frames, local_positions = extract_aa_frames(Vec3Array.from_array(pos))
     features = [
         local,
@@ -940,6 +927,7 @@ def get_angle_positions(aa_gt, local, pos):
     return raw_angles, angles, angle_pos
 
 class AADecoder(hk.Module):
+    """Amino acid sequence decoder module."""
     def __init__(self, config, name: Optional[str] = "aa_decoder"):
         super().__init__(name)
         self.config = config
@@ -955,6 +943,7 @@ class AADecoder(hk.Module):
         return Linear(20, initializer=init_zeros(), bias=False)(local), local
 
     def train(self, aa, local, pos, resi, chain, batch, mask):
+        """Apply the AADecoder during training."""
         c = self.config
         aa = 20 * jnp.ones_like(aa)
         logits, features = self(
@@ -963,6 +952,7 @@ class AADecoder(hk.Module):
         return logits, features, jnp.ones_like(mask)
 
 class DecoderStack(hk.Module):
+    """Standard stack of Decoder blocks."""
     def __init__(self, config, block,
                  name: Optional[str] = "decoder_stack"):
         super().__init__(name)
@@ -1001,6 +991,7 @@ class DecoderStack(hk.Module):
         return local, pos, trajectory, sup_distogram
 
 class SemiEquivariantDecoderStack(hk.Module):
+    """Stack of partly nonequivariant Decoder blocks using data augmentation."""
     def __init__(self, config, block,
                  name: Optional[str] = "decoder_stack"):
         super().__init__(name)
@@ -1028,6 +1019,7 @@ class SemiEquivariantDecoderStack(hk.Module):
         stack = block_stack(
             c.depth, c.block_size, with_state=True)(
                 hk.remat(stack_inner(decoder_block)))
+        # apply data augmentation when training non-equivariant Decoders
         pos = structure_augmentation(pos / c.sigma_data, batch, mask) * c.sigma_data
         (local, pos), (trajectory, sup_distogram) = stack((local, pos))
         if c.block_size > 1:
@@ -1039,8 +1031,8 @@ class SemiEquivariantDecoderStack(hk.Module):
             sup_distogram = jax.tree_util.tree_map(lambda x: x.reshape(-1, *x.shape[2:], sup_distogram))
         return local, pos, trajectory, sup_distogram
 
-# nonequivariant decoder
 class NonEquivariantDecoderStack(hk.Module):
+    """Stack of fully non-equivariant decoder blocks."""
     def __init__(self, config, block,
                  name: Optional[str] = "decoder_stack"):
         super().__init__(name)
@@ -1087,6 +1079,7 @@ class NonEquivariantDecoderStack(hk.Module):
         return local, pos, trajectory, sup_distogram
 
 def structure_augmentation_params(pos, batch, mask):
+    """Sample random rotation and translation parameters for data augmentation."""
     # center positions
     center = index_mean(pos[:, 1], batch, mask[:, None])
     # centering + random translation
@@ -1096,6 +1089,7 @@ def structure_augmentation_params(pos, batch, mask):
     return center, translation, rotation
 
 def apply_structure_augmentation(pos, center, translation, rotation):
+    """Apply a rotation and translation to an array of atom positions."""
     # center positions
     pos -= center[:, None]
     # apply transformation
@@ -1104,6 +1098,7 @@ def apply_structure_augmentation(pos, center, translation, rotation):
     return pos
 
 def apply_inverse_structure_augmentation(pos, center, translation, rotation):
+    """Apply the inverse of a rotation and translation to an array of atom positions."""
     # invert translation
     pos -= translation[:, None]
     # invert rotation
@@ -1113,6 +1108,7 @@ def apply_inverse_structure_augmentation(pos, center, translation, rotation):
     return pos
 
 def structure_augmentation(pos, batch, mask):
+    """Randomly rotate and translate an array of atom positions."""
     # get random augmentation parameters
     center, translation, rotation = structure_augmentation_params(pos, batch, mask)
     # apply random augmentation
@@ -1120,6 +1116,7 @@ def structure_augmentation(pos, batch, mask):
     return pos
 
 def random_rotation(batch):
+    """Sample a random rotation."""
     x = jax.random.normal(hk.next_rng_key(), (batch.shape[0], 3))[batch]
     y = jax.random.normal(hk.next_rng_key(), (batch.shape[0], 3))[batch]
     result = Rot3Array.from_two_vectors(
@@ -1128,6 +1125,7 @@ def random_rotation(batch):
     return result
 
 def aa_decoder_pair_features(c):
+    """Pair features for the AADecoder module."""
     def inner(pos, neighbours, resi, chain, batch, mask):
         pair_mask = mask[:, None] * mask[neighbours]
         pair_mask *= neighbours != -1
@@ -1147,6 +1145,7 @@ def aa_decoder_pair_features(c):
     return inner
 
 def init_local_features(c):
+    """Initial structure embedding for the Encoder."""
     def inner(pos, neighbours, resi, chain, batch, mask):
         pair_mask = mask[:, None] * mask[neighbours]
         pair_mask *= neighbours != -1
@@ -1170,6 +1169,7 @@ def init_local_features(c):
     return inner
 
 def decoder_pair_features(c):
+    """Pair features for the equivariant Decoder."""
     def inner(pos, dmap, neighbours,
               resi, chain, batch, mask):
         pair_mask = mask[:, None] * mask[neighbours]
@@ -1198,39 +1198,8 @@ def decoder_pair_features(c):
         return pair, pair_mask
     return inner
 
-def convolution_decoder_pair_features(c, center_features=False):
-    def inner(pos, dmap, neighbours,
-              resi, chain, batch, mask):
-        pair_mask = mask[:, None] * mask[neighbours]
-        pair_mask *= neighbours != -1
-        index = axis_index(neighbours, axis=0)
-        if dmap is not None:
-            dmap = dmap[index[:, None], neighbours]
-        pair = Linear(c.pair_size, bias=False, initializer="linear")(
-            sequence_relative_position(32, one_hot=True)(
-                resi, chain, batch, neighbours))
-        if dmap is not None:
-            pair += Linear(c.pair_size, initializer="linear", bias=False)(
-                jnp.where(pair_mask[..., None],
-                        distance_rbf(dmap), 0))
-        pos = Vec3Array.from_array(pos)
-        pair += Linear(c.pair_size, bias=False, initializer="linear")(
-            distance_features(pos, neighbours, d_min=0.0, d_max=22.0))
-        local_neighbourhood = jnp.concatenate((
-            jnp.repeat(pos.to_array()[:, None], neighbours.shape[1], axis=1),
-            pos.to_array()[neighbours]
-        ), axis=-2) / c.sigma_data
-        if center_features:
-            local_neighbourhood -= pos.to_array()[:, None, 1, None]
-        local_neighbourhood = local_neighbourhood.reshape(*neighbours.shape, -1)
-        pair += Linear(c.pair_size, bias=False, initializer="linear")(
-            local_neighbourhood)
-        pair = hk.LayerNorm([-1], True, True)(pair)
-        pair = MLP(pair.shape[-1] * 2, pair.shape[-1], activation=jax.nn.gelu, final_init="linear")(pair)
-        return pair, pair_mask
-    return inner
-
 def hybrid_decoder_pair_features(c, center_features=False):
+    """Pair features for the partially nonequivariant Decoder. (NEQ in the manuscript)"""
     def inner(pos, dmap, neighbours,
               resi, chain, batch, mask):
         pair_mask = mask[:, None] * mask[neighbours]
@@ -1258,10 +1227,6 @@ def hybrid_decoder_pair_features(c, center_features=False):
         center_neighbourhood = center_neighbourhood.reshape(*neighbours.shape, -1)
         pair += Linear(c.pair_size, bias=False, initializer="linear")(
             jnp.concatenate((local_neighbourhood, center_neighbourhood), axis=-1))
-        # pseudo rotation features
-        # local_vectors = (pos - pos[:, 1, None]).normalized().to_array()
-        # pseudo_rot = jnp.einsum("...jc,...nkc->...njk", local_vectors, local_vectors[neighbours])
-        # pseudo_rot = pseudo_rot.reshape(*neighbours.shape, -1)
         dirs = (pos[:, None, :, None] - pos[neighbours, None, :]).to_array()
         dirs = dirs.reshape(*neighbours.shape, -1)
         pair += Linear(c.pair_size, bias=False, initializer="linear")(dirs)
@@ -1272,6 +1237,10 @@ def hybrid_decoder_pair_features(c, center_features=False):
     return inner
 
 def nonequivariant_decoder_pair_features(c):
+    """Pair features for a fully non-equivariant decoder.
+    
+    Not used in the manuscript.
+    """
     def inner(local, dmap, neighbours,
               resi, chain, batch, mask):
         pair_mask = mask[:, None] * mask[neighbours]
@@ -1296,10 +1265,13 @@ def nonequivariant_decoder_pair_features(c):
     return inner
 
 def extract_dmap_neighbours(count=32):
+    """Extract nearest neighbours from a distance map."""
     def inner(distance, resi, chain, batch, mask):
         same_item = batch[:, None] == batch[None, :]
         weight = -3 * jnp.log(distance + 1e-6)
-        uniform = jax.random.uniform(hk.next_rng_key(), weight.shape, dtype=weight.dtype, minval=1e-6, maxval=1 - 1e-6)
+        uniform = jax.random.uniform(
+            hk.next_rng_key(), weight.shape,
+            dtype=weight.dtype, minval=1e-6, maxval=1 - 1e-6)
         gumbel = jnp.log(-jnp.log(uniform))
         weight = weight - gumbel
         distance = -weight
@@ -1309,6 +1281,7 @@ def extract_dmap_neighbours(count=32):
     return inner
 
 def extract_neighbours(num_index=16, num_spatial=16, num_random=16):
+    """Extract nearest neighbours of a residue based on sequence and euclidean distance."""
     def inner(pos, resi, chain, item, mask):
         pos = pos[:, 1]
         same_batch = (item[:, None] == item[None, :])
@@ -1332,6 +1305,7 @@ def extract_neighbours(num_index=16, num_spatial=16, num_random=16):
     return inner
 
 class VQ(hk.Module):
+    """Vector quantization module."""
     def __init__(self, codebook_size=4096,
                  affine=None,
                  mapped_axes=None,
@@ -1387,6 +1361,10 @@ class VQ(hk.Module):
         return out_features, assign_fwd, losses
 
 class FSQ(hk.Module):
+    """Finite scalar quantization module.
+    
+    Not used in the manuscript.
+    """
     def __init__(self, name: str | None = "fsq"):
         super().__init__(name)
 
@@ -1402,6 +1380,7 @@ class FSQ(hk.Module):
         return upcast, rounded
 
 class VQState(hk.Module):
+    """Vector quantization module with state."""
     def __init__(self, codebook_size=4096, gamma=0.99,
                  mapped_axes=None,
                  name: str | None = "vq"):
@@ -1463,12 +1442,13 @@ class VQState(hk.Module):
             unassigned_percent=(assignment_count > 0).mean()
         )
         state_update = dict(count=count, avg=avg, codebook=codebook)
-        # hk.set_state("count", count)
-        # hk.set_state("avg", avg)
-        # hk.set_state("codebook", codebook)
         return out_features, assign_fwd, losses, state_update
 
 class QuickDistogram(hk.Module):
+    """Per-layer distogram module.
+    
+    Not used in the manuscript (too slow to be viable).
+    """
     def __init__(self, config, name: Optional[str] = "quick_distogram"):
         super().__init__(name)
         self.config = config
@@ -1491,6 +1471,7 @@ class QuickDistogram(hk.Module):
         return distogram_logits, dmap
 
 class InnerDistogram(hk.Module):
+    """Light-weight per-layer distogram module. (+dist in the manuscript)"""
     def __init__(self, config, name: Optional[str] = "inner_distogram"):
         super().__init__(name)
         self.config = config
@@ -1511,6 +1492,10 @@ class InnerDistogram(hk.Module):
         return logits, dmap
 
 class NonEquivariantDecoderBlock(hk.Module):
+    """Fully non-equivariant decoder block.
+    
+    Not used in the manuscript.
+    """
     def __init__(self, config, name: Optional[str] = "decoder_block"):
         super().__init__(name)
         self.config = config
@@ -1549,6 +1534,7 @@ class NonEquivariantDecoderBlock(hk.Module):
         return features, distogram_logits
 
 class SemiEquivariantDecoderBlock(hk.Module):
+    """Partly non-equivariant decoder block (+dgram in the manuscript)."""
     def __init__(self, config, name: Optional[str] = "decoder_block"):
         super().__init__(name)
         self.config = config
@@ -1608,6 +1594,7 @@ class SemiEquivariantDecoderBlock(hk.Module):
         return features, pos.astype(local_norm.dtype), distogram_logits
 
 class DecoderBlock(hk.Module):
+    """Standard equivariant decoder block."""
     def __init__(self, config, name: Optional[str] = "decoder_block"):
         super().__init__(name)
         self.config = config
@@ -1679,6 +1666,7 @@ def make_pair_mask(mask, neighbours):
     return mask[:, None] * mask[neighbours] * (neighbours != -1)
 
 class EncoderUpdate(hk.Module):
+    """GeGLU update for the encoder."""
     def __init__(self, config, name: Optional[str] = "light_global_update"):
         super().__init__(name)
         self.config = config
@@ -1698,6 +1686,7 @@ class EncoderUpdate(hk.Module):
         return result
 
 class DecoderUpdate(hk.Module):
+    """GeGLU update with global averaging for the decoder."""
     def __init__(self, config, name: Optional[str] = "light_global_update"):
         super().__init__(name)
         self.config = config
@@ -1721,6 +1710,10 @@ class DecoderUpdate(hk.Module):
         return result
 
 class NonEquivariantDecoderUpdate(hk.Module):
+    """Fully non-equivariant update for the decoder.
+    
+    Not used in the manuscript
+    """
     def __init__(self, config, name: Optional[str] = "light_global_update"):
         super().__init__(name)
         self.config = config
@@ -1738,6 +1731,7 @@ class NonEquivariantDecoderUpdate(hk.Module):
         return result
 
 def update_positions(pos, local_norm, scale=10.0, symm=None):
+    """Equivariant position update."""
     frames, local_pos = extract_aa_frames(Vec3Array.from_array(pos))
     pos_update = scale * Linear(
         pos.shape[-2] * 3, initializer=init_zeros(),
@@ -1754,6 +1748,7 @@ def update_positions(pos, local_norm, scale=10.0, symm=None):
     return pos
 
 def semiequivariant_update_positions(pos, local_norm, scale=10.0, symm=None):
+    """Partially equivariant position update. (NEQ)"""
     pos_update = scale * Linear(
         pos.shape[-2] * 3, initializer=init_zeros(),
         bias=False)(local_norm)

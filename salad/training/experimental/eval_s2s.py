@@ -15,7 +15,7 @@ from salad.aflib.common.protein import to_pdb, from_pdb_string, Protein
 from salad.aflib.model.all_atom_multimer import atom37_to_atom14, atom14_to_atom37, get_atom37_mask
 from salad.aflib.model.geometry import Vec3Array
 
-from salad.modules.structure_to_sequence import S2SInference, S2SEfficientInference
+from salad.modules.experimental.structure_to_sequence import S2SInference, S2SEfficientInference
 from salad.modules.config import structure_to_sequence as config_choices
 from salad.data.allpdb import slice_dict
 from flexloop.utils import parse_options

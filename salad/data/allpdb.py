@@ -1,3 +1,8 @@
+"""This module implements dataset classes for loading and training on PDB-like datasets.
+
+All models in the manuscript were trained with the BatchedProteinPDBStream dataset.
+"""
+
 import os
 import datetime
 from typing import Dict
@@ -9,8 +14,8 @@ from numpy import ndarray
 from torch.utils.data import Dataset, IterableDataset
 from salad.data.periodic_table import periodic_table, pt_at, ATOM_TYPE_ORDER, index_atoms, apply_pt
 
-# FIXME: diagnostics
 def decode_sequence(x: np.ndarray) -> str:
+    """Decode an integer-encoder amino acid sequence into 1-letter code."""
     AA_CODE = "ARNDCQEGHILKMFPSTWYVX"
     x = np.array(x)
     return "".join([AA_CODE[c] for c in x])
@@ -30,6 +35,22 @@ AA_BACKBONE_ATOMS = ["N", "CA", "C", "O"]
 NA_BACKBONE_ATOMS = ["P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C1'", "C2'", "O2'", "C3'", "O3'"]
 
 class AllPDB:
+    """Implements data loading for structures in the PDB.
+    
+    Includes all residues and needs to be filtered for training protein models.
+
+    Args:
+        path: path to the dataset directory.
+        start_date: DD/MM/YY lower-limit deposition date.
+        cutoff_date: DD/MM/YY upper-limit deposition date.
+        cutoff_resolution: maximum resolution.
+        filter_residue_type: optional list of residue types to include (subset of RESTYPES).
+        seqres_aa: name of the amino acid sequence cluster file.
+        seqres_na: name of the nucleic acid sequence cluster file.
+        assembly: use biological assemblies. Default: True.
+        split_types: produce separate dictionaries for separate residue types. Default: False.
+        npz_version: optional dataset version suffix.
+    """
     def __init__(self, path, start_date="01/01/90", cutoff_date="12/31/21",
                  cutoff_resolution=4.0, filter_residue_type=None,
                  seqres_aa="clusterSeqresAA", seqres_na="clusterSeqresNA",
@@ -55,10 +76,16 @@ class AllPDB:
 
     def __getitem__(self, kind, index) -> Dict[str, np.ndarray]:
         data_index = self.data_index[kind]
+        # select a random chain at the selected index
         chosen_chain = random.choice(data_index[index])
+        # select a random biological assembly
         assembly = random.choice(chosen_chain["assemblies"])
+        # load the npz archive for that assembly
         raw_data = np.load(f"{self.path}/{assembly}")
         residue_type = raw_data["residue_type"]
+        # filter for selected residue types
+        # optionally return separate dictionaries
+        # for different residue types.
         if self.split_types:
             split_data = dict()
             for res_type in self.filter_residue_type:
@@ -69,6 +96,8 @@ class AllPDB:
                 }
                 split_data[res_type] = raw_data_part
             raw_data = split_data
+        # by default, return one dictionary
+        # for all residue types
         else:
             accept = (residue_type[:, None] == self.filter_residue_type[None, :]).any(axis=-1)
             raw_data = {
@@ -78,6 +107,7 @@ class AllPDB:
         return raw_data, chosen_chain["chain"]
 
 class AllPDBSample(AllPDB):
+    """PDB dataset with AlphaFold-like random rejection of data points."""
     def __init__(self, path, start_date="01/01/90", cutoff_date="12/31/21",
                  cutoff_resolution=4, filter_residue_type=None,
                  seqres_aa="clusterSeqresAA", seqres_na="clusterSeqresNA",
@@ -95,6 +125,7 @@ class AllPDBSample(AllPDB):
         data_index = self.data_index[kind]
         chosen_chain = data_index[index]
         assembly = random.choice(chosen_chain["assemblies"])
+        # randomly skip the selected chain
         weight = chosen_chain["weight"]
         accept_item = random.random() < weight
         if not accept_item:
@@ -109,6 +140,8 @@ class AllPDBSample(AllPDB):
         return raw_data, chosen_chain["chain"]
 
 class ProteinPDB(AllPDB):
+    """Protein-specific PDB dataset in atom24 format
+    (amino acid and nucleic acid atoms)."""
     def __init__(self, path, start_date="01/01/90",
                  cutoff_date="12/31/21",
                  cutoff_resolution=4,
@@ -128,7 +161,10 @@ class ProteinPDB(AllPDB):
              'TYR', 'VAL', 'UNK'])
 
     def __getitem__(self, index) -> Dict[str, np.ndarray]:
+        # get raw PDB data
         raw_data, chain = super().__getitem__("AA", index)
+        # encode the amino acid sequence
+        # using the provided amino acid order (alphabetic, 3-letter).
         aa_gt = np.argmax(
             raw_data["residue_name"][:, None] == self.aa_order[None, :], axis=-1)
         aa_gt = np.where(
@@ -154,6 +190,7 @@ class ProteinPDB(AllPDB):
         return len(self.data_index["AA"])
 
 class AtomPDB(AllPDB):
+    """All-atom PDB dataset in atom1 format (residue atoms not bundled)."""
     def __init__(self, path, start_date="01/01/90", cutoff_date="12/31/21",
                  cutoff_resolution=4, seqres_aa="clusterSeqresAA",
                  seqres_na="clusterSeqresNA", assembly=True, split_types=False, npz_version=""):
@@ -192,7 +229,7 @@ class AtomPDB(AllPDB):
         # mark 5' and 3' bonding atoms
         na_p = (atom_name == "P") * is_na_backbone
         na_o3 = (atom_name == "O3'") * is_na_backbone
-        # set up joint privileged atom info
+        # set up joint privileged atom info (amino acids and nucleic acids)
         privileged_atom = np.concatenate((
             aa_backbone_one_hot, na_backbone_one_hot), axis=-1)
         # encode periodic table information
@@ -232,6 +269,7 @@ class AtomPDB(AllPDB):
         ), chain
 
 class AtomPDBStream(IterableDataset):
+    """All-atom structure IterableDataset."""
     def __init__(self, path, num_atom=1024, num_residue=None, p_mask_aa=0.0,
                  start_date="01/01/90", cutoff_date="12/31/21",
                  cutoff_resolution=4, seqres_aa="clusterSeqresAA",
@@ -329,6 +367,7 @@ class AtomPDBStream(IterableDataset):
         return batch
 
 class ProteinAtomPDB(AllPDB):
+    """DEPRECATED"""
     def __init__(self, path, start_date="01/01/90", cutoff_date="12/31/21",
                  cutoff_resolution=4, filter_residue_type=None, seqres_aa="clusterSeqresAA",
                  seqres_na="clusterSeqresNA", assembly=True, split_types=False, npz_version=""):
@@ -347,6 +386,9 @@ class ProteinAtomPDB(AllPDB):
         pass # TODO
 
 class ProteinSMOLNeighboursPDB(AllPDB):
+    """Dataset for protein structures bundled with small molecule neighbours.
+    
+    This can be used for training LigandMPNN-type models."""
     def __init__(self, path, start_date="01/01/90",
                  cutoff_date="12/31/21",
                  cutoff_resolution=4,
@@ -373,11 +415,13 @@ class ProteinSMOLNeighboursPDB(AllPDB):
 
     def __getitem__(self, index) -> Dict[str, np.ndarray]:
         raw_data, chain = super().__getitem__("AA", index)
-        # AA data
+        # get amino acid residues
         aa_data = raw_data["AA"]
+        # split a random subset of these into atoms
         atomize = np.random.rand(aa_data["residue_name"].shape[0]) < self.p_atomize
         raw_data["AASMOL"] = slice_dict(aa_data, atomize)
         aa_data = slice_dict(aa_data, ~atomize)
+        # encode the amino acid sequence for the remaining residues
         aa_gt = np.argmax(
             aa_data["residue_name"][:, None] == self.aa_order[None, :], axis=-1)
         aa_gt = np.where(
@@ -391,7 +435,7 @@ class ProteinSMOLNeighboursPDB(AllPDB):
         all_atom_positions = aa_data["position"]
         all_atom_mask = aa_data["atom_mask"]
 
-        # SMOL data
+        # get small molecule / non-protein data
         smol_positions = []
         smol_types = []
         for smol in ["AASMOL", "DNA", "RNA", "SMOL", "METAL"]:
@@ -407,21 +451,6 @@ class ProteinSMOLNeighboursPDB(AllPDB):
             smol_types.append(assignment)
         smol_positions = np.concatenate(smol_positions, axis=0)
         smol_types = np.concatenate(smol_types, axis=0)
-        if False:
-            ca = all_atom_positions[:, 1]
-            distance = np.linalg.norm(ca[:, None] - smol_positions[None, :], axis=-1)
-            neighbours = np.argsort(distance, axis=1)[:, :self.num_smol_neighbours]
-            if neighbours.shape[1] < self.num_smol_neighbours:
-                diff = self.num_smol_neighbours - neighbours.shape[1]
-                neighbours = np.concatenate((
-                    neighbours,
-                    -np.ones((neighbours.shape[0], diff),
-                            dtype=np.int32)), axis=1)
-            smol_positions = smol_positions[neighbours]
-            smol_types = smol_types[neighbours]
-            smol_mask = neighbours != -1
-            smol_positions = np.where(smol_mask[..., None], smol_positions, 0)
-            smol_types = np.where(smol_mask, smol_types, 6)
         return dict(
             aa_gt=aa_gt,
             residue_index=residue_index,
@@ -438,6 +467,7 @@ class ProteinSMOLNeighboursPDB(AllPDB):
         return len(self.data_index["AA"])
 
 def np_compute_pseudo_beta(x):
+    """Numpy implementation of idealized CB computation."""
     n, ca, co = np.moveaxis(x[..., :3, :], -2, 0)
     b = ca - n
     c = co - ca
@@ -446,6 +476,10 @@ def np_compute_pseudo_beta(x):
     return const[0] * a + const[1] * b + const[2] * c + ca
 
 class ProteinBinderPDB(ProteinPDB):
+    """Protein PDB dataset for binder design.
+    
+    Extracts pairs of in-contact chains and designates them binder and target.
+    """
     def __init__(self, path, num_aa=1024, start_date="01/01/90", cutoff_date="12/31/21",
                  cutoff_resolution=4, seqres_aa="clusterSeqresAA", seqres_na="clusterSeqresNA",
                  assembly=True):
@@ -533,6 +567,7 @@ class ProteinBinderPDB(ProteinPDB):
         return data, chain_id
 
 class ProteinCropPDB(ProteinPDB):
+    """Fixed-size crop ProteinPDB dataset."""
     def __init__(self, path, size, start_date="01/01/90", cutoff_date="12/31/21", cutoff_resolution=4,
                  seqres_aa="clusterSeqresAA", seqres_na="clusterSeqresNA", assembly=True) -> None:
         super().__init__(path, start_date, cutoff_date, cutoff_resolution, seqres_aa, seqres_na, assembly)
@@ -544,6 +579,7 @@ class ProteinCropPDB(ProteinPDB):
         relevant_chain *= raw_protein["all_atom_mask"][:, 1]
         protein = slice_dict(raw_protein, relevant_chain)
         length = protein["aa_gt"].shape[0]
+        # crop to maximum size
         if length > self.size:
             crop_start = np.random.randint(0, length - self.size)
             crop_end = crop_start + self.size
@@ -557,6 +593,7 @@ class ProteinCropPDB(ProteinPDB):
         return protein
 
 class ProteinPDBSample(AllPDBSample):
+    """ProteinPDB dataset with AlphaFold-style random skipping of structures."""
     def __init__(self, path, start_date="01/01/90",
                  cutoff_date="12/31/21",
                  cutoff_resolution=4,
@@ -619,6 +656,7 @@ class ProteinPDBSample(AllPDBSample):
         return len(self.data_index["AA"])
 
 class BatchedProteinPDB(Dataset):
+    """DEPRECATED: batched ProteinPDB dataset."""
     def __init__(self, path, start_date="01/01/90",
                  cutoff_date="12/31/21",
                  cutoff_resolution=4,
@@ -757,8 +795,15 @@ class BatchedProteinPDB(Dataset):
     def __len__(self):
         return len(self.protein_pdb)
 
-# TODO refactor to reduce code duplication
 class BatchedProteinPDBStream(IterableDataset):
+    """Batched stream of protein structures from the PDB.
+    
+    Args:
+        size: maximum number of residues per batch.
+        p_complex: probability to return a complex structure.
+        min_size, max_size: minimum and maximum protein length.
+        **kwargs: as in ProteinPDB
+    """
     def __init__(self, path, start_date="01/01/90",
                  cutoff_date="12/31/21",
                  cutoff_resolution=4,
@@ -923,6 +968,7 @@ class BatchedProteinPDBStream(IterableDataset):
             yield self.next_item()
 
 class CroppedPDBStream(BatchedProteinPDBStream):
+    """Stream of cropped protein structures from the PDB."""
     def __init__(self, path, start_date="01/01/90", cutoff_date="12/31/21",
                  cutoff_resolution=4, size=1024, p_complex=0.5,
                  seqres_aa="clusterSeqresAA", seqres_na="clusterSeqresNA",
@@ -1046,6 +1092,7 @@ class CroppedPDBStream(BatchedProteinPDBStream):
         return data
 
 class BinderPDBStream(IterableDataset):
+    """EXPERIMENTAL. Stream of binder-target pairs from the PDB."""
     def __init__(self, path, start_date="01/01/90",
                  cutoff_date="12/31/21",
                  cutoff_resolution=4,
@@ -1071,7 +1118,6 @@ class BinderPDBStream(IterableDataset):
     def get_next_pdb(self):
         data = None
         while data is None:
-            # print("attempting next PDB...")
             if not self.current_index:
                 self.current_index = list(range(len(self.protein_pdb)))
                 random.shuffle(self.current_index)
@@ -1121,12 +1167,6 @@ class BinderPDBStream(IterableDataset):
                 # print(decode_sequence(aa_gt))
                 continue
 
-            # skip according to length (as done in AlphaFold)
-            # FIXME: skip chance considered harmful
-            # skip_chance = 1 - max(min(selected_chain_size, 512), 256) / 512
-            # if random.random() < skip_chance:
-            #     print("chain skipped")
-            #     continue
             # skip chains wrongly marked as proteins
             if selected_chain_size == 0:
                 # print("chain empty")
@@ -1143,23 +1183,10 @@ class BinderPDBStream(IterableDataset):
                 else:
                     # print("doesn't fit, requeue and break")
                     break
-            # with probability 1-p_complex we're in single-sequence mode:
-            # add just the chosen chain to the complex
-            # elif random.random() <= (1 - self.p_complex):
-            #     # the selected chain fits in the batch
-            #     part = slice_dict(protein_data, selected_chain)
-            # otherwise, we're in complex mode:
             # add the entire complex if it fits
             else:
                 part = protein_data
-            # if the single chain fits, but the complex as a whole
-            # is too large:
-            # add a subset of chains in the complex
-            # else:
-            #     # add just the chosen chain to the batch
-            #     part = slice_dict(protein_data, selected_chain)
             if part["chain_index"].shape[0] == 0:
-                # print("part empty")
                 continue
             part["chain_index"] = numerical_chain_index(part["chain_index"])
             part_size = part["aa_gt"].shape[0]
@@ -1185,10 +1212,12 @@ class BinderPDBStream(IterableDataset):
             yield self.next_item()
 
 def numerical_chain_index(chain):
+    """Convert an alphabetical chain index to numerical."""
     indices = np.unique(chain)
     return np.argmax(chain[:, None] == indices[None, :], axis=-1)
 
 def slice_dict(data, indices):
+    """Slice all entries in a data dictionary by a set of indices."""
     return {
         name: item[indices] if item.ndim > 0 else item
         for name, item in data.items()
@@ -1219,6 +1248,7 @@ def pad_item(data, target_size):
   return result, mask
 
 def pad_dict(data, target_size):
+    """Pad all arrays in a dictionary to a target size."""
     result = {}
     mask = None
     for name in data:
@@ -1227,6 +1257,7 @@ def pad_dict(data, target_size):
     return result
 
 def parse_date(date):
+    """Parse a PDB entry date."""
     month, day, year = date.split("/")
     day = int(day)
     month = int(month)
@@ -1238,6 +1269,7 @@ def parse_date(date):
     return datetime.date(year=year, month=month, day=day)
 
 def parse_resolution(resolution):
+    """Parse a PDB entry resolution."""
     if resolution in ("NOT", ""):
         return 999.0
     if "," in resolution:
@@ -1245,6 +1277,7 @@ def parse_resolution(resolution):
     return float(resolution)
 
 def read_entries(entries_path):
+    """Read an entries.idx file from PDB."""
     entry_dict = dict()
     with open(entries_path, "rt") as f:
         fit = iter(f)
@@ -1261,6 +1294,7 @@ def read_entries(entries_path):
     return entry_dict
 
 def read_clusters(cluster_path, clusters=None, entry_clusters=None):
+    """Read a cluster representative file generated using mmseqs 2."""
     clusters = clusters or {}
     entry_clusters = entry_clusters or {}
     with open(cluster_path, "rt") as f:
@@ -1285,6 +1319,7 @@ def read_clusters(cluster_path, clusters=None, entry_clusters=None):
     return clusters, entry_clusters
 
 def create_entry_index(entry_clusters, entries, npz_assemblies, filter):
+    """Create an index of entries in a PDB-like dataset."""
     result = []
     for cluster, members in entry_clusters.items():
         filtered_cluster = []
@@ -1306,6 +1341,7 @@ def create_entry_index(entry_clusters, entries, npz_assemblies, filter):
     return result
 
 def read_chain_assemblies(path):
+    """Read a CSV file of biological assemblies for each PDB chain."""
     with open(path, "rt") as f:
         result = {}
         for line in f:
@@ -1317,6 +1353,7 @@ def read_chain_assemblies(path):
     return result
 
 def create_chain_index(chain_clusters, entries, npz_assemblies, chain_assemblies, filter):
+    """Create an index of chain information in a PDB-like dataset."""
     result = []
     for _, members in chain_clusters.items():
         filtered_cluster = []
@@ -1350,6 +1387,7 @@ def create_chain_index(chain_clusters, entries, npz_assemblies, chain_assemblies
     return result
 
 def create_cluster_weights(index):
+    """Compute cluster weights as 1 / cluster_size."""
     result = []
     for filtered_cluster in index:
         cluster_size = len(filtered_cluster)
@@ -1362,6 +1400,7 @@ def create_cluster_weights(index):
 def compute_index(path, start_date="12/31/90", cutoff_date="12/31/21", cutoff_resolution=4.0,
                   seqres_aa="clusterSeqresAA", seqres_na="clusterSeqresNA",
                   npz_version=""):
+    """Compute an index datastructure for biological assemblies in a PDB-like dataset."""
     def entry_filter(x):
         return (
             x["resolution"] <= cutoff_resolution
@@ -1394,6 +1433,7 @@ def compute_index(path, start_date="12/31/90", cutoff_date="12/31/21", cutoff_re
 
 def compute_asym_index(path, start_date="12/31/90", cutoff_date="12/31/21", cutoff_resolution=4.0,
                        seqres_aa="clusterSeqresAA", seqres_na="clusterSeqresNA"):
+    """Compute an index datastructure for entries in a PDB-like dataset."""
     def entry_filter(x):
         return (
             x["resolution"] <= cutoff_resolution

@@ -13,16 +13,13 @@ import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from salad.aflib.common.protein import to_pdb, Protein, from_pdb_string
-from salad.aflib.model.geometry import Vec3Array
-from salad.aflib.model.all_atom_multimer import atom14_to_atom37, atom37_to_atom14, get_atom37_mask
+from salad.aflib.common.protein import to_pdb, Protein
+from salad.aflib.model.all_atom_multimer import atom14_to_atom37, get_atom37_mask
 
 from salad.modules.noise_schedule_benchmark import (
-    StructureDiffusionInference, sigma_scale_cosine, sigma_scale_framediff,
-    positions_to_ncacocb)
+    StructureDiffusionInference, sigma_scale_cosine, sigma_scale_framediff,)
 from salad.modules.config import noise_schedule_benchmark as config_choices
 from flexloop.utils import parse_options
-from salad.modules.utils.geometry import extract_aa_frames
 from salad.data.allpdb import decode_sequence
 
 def model_step(config):
@@ -33,6 +30,42 @@ def model_step(config):
         diffusion = module(config)
         start_prev = prev
         out, prev = diffusion(data, start_prev)
+        pos = out["pos"]
+        ca = pos[:, 1]
+        resi = data["residue_index"]
+        chain = data["chain_index"]
+        num_aa = chain.shape[0]
+        num_split = num_aa // 100
+        same_chain = chain[:, None] == chain[None, :]
+        mean_pos = ca.reshape(num_split, 100, 3).mean(axis=1, keepdims=True)
+        mean_pos = jnp.broadcast_to(mean_pos, (num_split, num_aa // num_split, 3)).reshape(-1, 3)
+        mean_mean_pos = (mean_pos[1:] + mean_pos[:-1]) / 2
+        mean_update = jnp.zeros_like(mean_pos)
+        mean_update = mean_update.at[1:].add(mean_mean_pos - mean_pos[1:])
+        mean_update = mean_update.at[:-1].add(mean_mean_pos - mean_pos[:-1])
+        mean_pos += config.mean_lr * mean_update
+        compact_update = mean_pos[:, None] - pos
+        center_update = ca.mean(axis=0)[None, None, :] - pos
+        rdist = jnp.where(same_chain, abs(resi[:, None] - resi[None, :]), jnp.inf)
+        long_range = rdist > 16
+        # clashyness metric to take gradients over
+        def clashy(x):
+            clash_threshold = 8.0
+            dist = jnp.sqrt(jnp.maximum(
+                ((x[:, None] - x[None, :]) ** 2).sum(axis=-1), 1e-6))
+            clashyness = jnp.where(
+                long_range,
+                jax.nn.relu(clash_threshold - dist) / clash_threshold, 0).sum()
+            return clashyness
+        clash_update = -jax.grad(clashy, argnums=(0,))(ca)[0][:, None]
+        compact_lr = config.compact_lr
+        center_lr = config.center_lr
+        clash_lr = config.clash_lr
+        pos += compact_lr * data["t_pos"][:, None, None] * compact_update
+        pos += center_lr * data["t_pos"][:, None, None] * center_update
+        pos += clash_lr * data["t_pos"][:, None, None] * clash_update
+        out["pos"] = pos
+        
         return out, prev
     return step
 
@@ -172,32 +205,11 @@ def parse_dssp(data):
         return random_dssp
     return np.array([DSSP_CODE.index(c) for c in data.strip()], dtype=np.int32)
 
-def parse_blob(c, path):
-    init_pos = []
-    with open(path) as f:
-        next(f)
-        for line in f:
-            *xyz, num_aa = line.strip().split(",")
-            num_aa = int(num_aa)
-            xyz = np.array([float(i) for i in xyz], dtype=np.float32)
-            xyz = np.repeat(xyz[None, None], num_aa, axis=0)
-            xyz = np.repeat(xyz, 5 + c.augment_size, axis=1)
-            init_pos.append(xyz)
-    init_pos = np.concatenate(init_pos, axis=0)
-    num_aa = init_pos.shape[0]
-    resi = np.arange(num_aa)
-    chain = np.zeros_like(resi)
-    is_cyclic = False
-    cyclic_mask = np.zeros_like(chain, dtype=np.bool_)
-    return num_aa, init_pos, resi, chain, is_cyclic, cyclic_mask
-
 if __name__ == "__main__":
     opt = parse_options(
         "sample from a protein diffusion model.",
         params="params/default_ve_scaled-200k.jax",
         out_path="outputs/",
-        blobs="blobs.csv",
-        blob_scale=1.8,
         config="default_ve_scaled",
         timescale_pos="ve(t)",
         timescale_seq="1",
@@ -214,33 +226,48 @@ if __name__ == "__main__":
         sym_mean="True",
         num_designs=10,
         num_steps=500,
-        out_steps="400",
+        out_steps="499",
         dssp_mean="none",
         dssp="none",
         template="none",
         template_aa="False",
-        prev_threshold=0.99,
-        replace_threshold=0.0,
+        prev_threshold=1.0,
         cloud_std="none",
         depth_adjust="none",
+        # learning rate for compactness gradients
+        compact_lr=0.0,
+        center_lr=0.0,
+        # learning rate for clash gradients
+        clash_lr=0.0,
+        mean_lr=0.0,
+        fixcenter_threshold=40.0,
         sym_threshold=0.0,
+        start_std=10.0,
+        start_lr=0.1,
+        start_steps=100,
         jax_seed=42
     )
     dssp_mean = parse_dssp_mean(opt.dssp_mean)
     dssp = parse_dssp(opt.dssp)
 
     print(f"Running protein design with specification {opt.num_aa}")
-    config = getattr(config_choices, opt.config)
     start = time.time()
-    num_aa, init_pos, resi, chain, is_cyclic, cyclic_mask = parse_blob(config, opt.blobs)
-    init_pos *= opt.blob_scale
+    num_aa, resi, chain, is_cyclic, cyclic_mask = parse_num_aa(opt.num_aa)
     base_chain = chain
     if opt.merge_chains == "True":
         chain = jnp.zeros_like(chain)
     out_steps = parse_out_steps(opt.out_steps)
 
+    config = getattr(config_choices, opt.config)
     config.eval = True
     config.cyclic = is_cyclic
+    config.clash_lr = opt.clash_lr
+    config.mean_lr = opt.mean_lr
+    config.compact_lr = opt.compact_lr
+    config.center_lr = opt.center_lr
+    
+    if opt.depth_adjust != "none":
+        config.diffusion_depth = int(opt.depth_adjust)
     key = jax.random.PRNGKey(opt.jax_seed)
     _, model = hk.transform(model_step(config))
     model = jax.jit(model)
@@ -265,6 +292,22 @@ if __name__ == "__main__":
     print(f"Start generating {opt.num_designs} designs with {opt.num_steps} denoising steps...")
     os.makedirs(opt.out_path, exist_ok=True)
     for idx in range(opt.num_designs):
+        # directions = np.random.randn(64, 3)
+        # directions /= np.linalg.norm(directions, axis=-1)[..., None]
+        # init_centers = np.cumsum(directions * 10.0, axis=0)
+        start = opt.start_std * np.random.randn(5, 3)
+        start = np.cumsum(start, axis=0)
+        def cost(x):
+            dist = jnp.sqrt(1e-6 + ((x[:, None] - x[None, :]) ** 2).sum(axis=-1))
+            return ((1 - jnp.eye(5)) * (dist - 10) ** 2).mean()
+        current = start
+        for _ in range(opt.start_steps):
+            grad = jax.grad(cost, argnums=0)(current)
+            current -= opt.start_lr * grad
+        init_pos = np.repeat(current, 200, axis=0)[:num_aa]
+        init_pos = np.repeat(init_pos[:, None], 5 + config.augment_size, axis=1)
+        init_pos = jnp.array(init_pos)
+        # init_pos = jnp.zeros((num_aa, 14 if config.encode_atom14 else 5 + config.augment_size, 3), dtype=jnp.float32)
         cloud_std = cloud_std_func(num_aa)
         data = dict(
             pos=init_pos,
@@ -309,10 +352,6 @@ if __name__ == "__main__":
             else:
                 update, prev = model(params, subkey, data, prev)
             pos = update["pos"]
-            pos_centers = pos[:, 1].reshape(-1, 100, 3).mean(axis=1, keepdims=True)
-            pos_centers = jnp.repeat(pos_centers, 100, axis=1).reshape(-1, 3)
-            if raw_t >= opt.replace_threshold:
-                pos = pos - pos_centers[:, None, :] + init_pos
             data["pos"] = pos
             data["seq"] = jnp.argmax(update["aa"], axis=-1)
             maxprob = jax.nn.softmax(update["aa"], axis=-1).max(axis=-1)
@@ -320,24 +359,6 @@ if __name__ == "__main__":
             data["aatype"] = update["aatype"]
             if step in out_steps:
                 results = [{key: value for key, value in data.items()}]
-                if opt.renoise == "True":
-                    for idr in range(9):
-                        for s in range(int(opt.num_steps * 0.6), step):
-                            key, subkey = jax.random.split(key)
-                            raw_t = 1 - s / opt.num_steps
-                            scaled_t = parse_timescale(opt.timescale_pos)(raw_t)
-                            data["t_pos"] = scaled_t * jnp.ones_like(data["t_pos"])
-                            data["t_seq"] = parse_timescale(opt.timescale_seq)(raw_t) * jnp.ones_like(data["t_seq"])
-                            prev = init_prev
-                            update, prev = model(params, subkey, data, prev)
-                            pos = update["pos"]
-                            data["pos"] = pos
-                            data["seq"] = jnp.argmax(update["aa"], axis=-1)
-                            maxprob = jax.nn.softmax(update["aa"], axis=-1).max(axis=-1)
-                            data["atom_pos"] = update["atom_pos"]
-                            data["aatype"] = update["aatype"]
-                        item = {key:value for key, value in data.items()}
-                        results.append(item)
                 for idr, data in enumerate(results):
                     if opt.sequence_only == "True":
                         header = f">design_{idx}_{step}\n"
@@ -350,8 +371,6 @@ if __name__ == "__main__":
                             f.flush()
                     else:
                         pdb_path = f"{opt.out_path}/result_{idx}_{step}.pdb"
-                        if opt.renoise == "True":
-                            pdb_path = f"{opt.out_path}/result_{idx}_{idr}_{step}.pdb"
                         atom37 = atom14_to_atom37(data["atom_pos"], data["aatype"])
                         atom37_mask = get_atom37_mask(data["aatype"])
                         protein = Protein(np.array(atom37), np.array(data["aatype"]),

@@ -10,22 +10,20 @@ import optax
 from torch.utils.tensorboard import SummaryWriter
 
 from flexloop.simple_loop import (
-    training, log, load_loop_state, update_step, rebatch_call, rebatch_call_bysize, State)
-from salad.modules.gradient_diffusion import StructureDiffusion
-from salad.modules.config import noise_schedule_benchmark as config_choices
+    training, log, load_loop_state, update_step, valid_step, rebatch_call, State)
+from salad.modules.experimental.condition_to_sequence import C2S
+from salad.modules.config import condition_to_sequence as config_choices
 from flexloop.utils import parse_options
 from flexloop.loop import cast_float
 
 def model_step(config, rebatch=1, is_training=True):
-    module = StructureDiffusion
+    module = C2S
     if not is_training:
         config = deepcopy(config)
         config.eval = True
     def step(data):
         data = jax.tree_util.tree_map(lambda x: jnp.array(x), data)
         data = cast_float(data, dtype=jnp.float32)
-        # FIXME: sharded model?
-        # loss, out = rebatch_call(module(config), rebatch=rebatch)
         loss, out = rebatch_call(
             module(config), rebatch=rebatch)(data)
         res_dict = {
@@ -65,6 +63,18 @@ def make_training_inner(optimizer, step, data, accumulate=1, multigpu=True, ema_
         return new_state, loggables, checkpointables
     return training_inner
 
+def make_valid_inner(step, data, multigpu=True, with_state=False):
+    step = valid_step(step, multigpu=multigpu, with_state=with_state)
+    def valid_inner(loop_state: State):
+        t = time.time()
+        item = next(data)
+        params = loop_state.params
+        res_dict = step(
+            params, loop_state.key, item)
+        print(f"Computed valid batch in {time.time() - t:.3f} seconds.")
+        return res_dict
+    return valid_inner
+
 def cosine_decay_schedule(start_lr, decay_lr, warmup_steps, decay_steps):
     def schedule(count):
         result = jnp.where(
@@ -86,7 +96,7 @@ def replicate_loop_state(state):
     )
 
 if __name__ == "__main__":
-    from salad.data.allpdb import BatchedProteinPDBStream
+    from salad.data.allpdb import BatchedProteinPDBStream, ProteinSMOLNeighboursPDB
     from flexloop.data import BatchStream
 
     opt = parse_options(
@@ -117,7 +127,7 @@ if __name__ == "__main__":
         multigpu = False
         NUM_DEVICES = 1
     path = opt.path
-    path = f"{path}/salad/gd-{opt.config}-{opt.num_aa}-{opt.suffix}"
+    path = f"{path}/salad/c2s-{opt.config}-{opt.num_aa}-{opt.suffix}"
     writer = SummaryWriter(path)
 
     print("Attempting to load dataset...")
@@ -125,19 +135,33 @@ if __name__ == "__main__":
                                    seqres_aa="clusterSeqresAA",
                                    cutoff_resolution=4.0,
                                    p_complex=opt.p_complex,
-                                   size=1024,
+                                   size=opt.num_aa,
                                    min_size=16,
-                                   max_size=1024)
+                                   max_size=opt.num_aa,
+                                   base_dataset=ProteinSMOLNeighboursPDB)
     data = iter(BatchStream(data, num_workers=32,
                             accumulate=opt.rebatch * opt.accumulate * NUM_DEVICES,
                             prefetch_factor=32))
+    valid_data = BatchedProteinPDBStream(f"{opt.data_path}/allpdb/",
+                                         seqres_aa="clusterSeqresAA",
+                                         cutoff_resolution=4.0,
+                                         p_complex=opt.p_complex,
+                                         size=1024,
+                                         min_size=16,
+                                         max_size=1024,
+                                         start_date="01/01/22",
+                                         cutoff_date="12/31/23",
+                                         base_dataset=ProteinSMOLNeighboursPDB)
+    valid_data = iter(BatchStream(valid_data, num_workers=8,
+                                  accumulate=opt.rebatch * opt.accumulate * NUM_DEVICES,
+                                  prefetch_factor=8))
     print("Dataset successfully loaded.")
 
     config = getattr(config_choices, opt.config)
     key = jax.random.PRNGKey(opt.jax_seed)
     rebatch = opt.rebatch
-    # FIXME: sharded rebatch?
     init, step = transformed = hk.transform(model_step(config, rebatch=rebatch, is_training=True))
+    _, valid = hk.transform(model_step(config, rebatch=rebatch, is_training=False))
 
     print("Initializing model parameters...")
     item_0 = next(data)
@@ -181,16 +205,14 @@ if __name__ == "__main__":
                             accumulate=opt.accumulate,
                             multigpu=multigpu,
                             ema_weight=opt.ema_weight),
+        valid_inner=make_valid_inner(valid, valid_data,
+                                     multigpu=multigpu,
+                                     with_state=False),
+        valid_interval=100,
         max_steps=total_steps,
         logger=log())
     print("Recovering previous state, if available...")
     loop_state = load_loop_state(path) or loop_state
-    # FIXME: explicit replication
-    # if multigpu:
-    #     loop_state = replicate_loop_state(loop_state)
-    # FIXME: explicit replication
-    # if multigpu:
-    #     opt_state = jax.device_put_replicated(opt_state)
     print("Starting training...")
     print(f"Log files and tensorboard records will be written to {path}")
     training_loop(writer, loop_state)

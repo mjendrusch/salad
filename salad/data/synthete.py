@@ -1,3 +1,5 @@
+"""This module implements data loading for the synthetic data set generated in the manuscript."""
+
 import os
 import datetime
 from typing import Dict
@@ -9,6 +11,7 @@ from numpy import ndarray
 from torch.utils.data import Dataset, IterableDataset
 
 class Synthete:
+    """Synthetic dataset class."""
     def __init__(self, path, mode="Train", filter=True,
                  seed=42, p_valid=0.1, p_test=0.1,
                  relative_path="data/npz") -> None:
@@ -82,6 +85,7 @@ class Synthete:
 
 # all items have size 256, if you need more, increase the rebatch value
 class SyntheteStream(IterableDataset):
+    """PyTorch iterable dataset sampling batches from the synthetic dataset."""
     def __init__(self, path, mode="Train", filter=True, seed=42, p_valid=0.1, p_test=0.1) -> None:
         super().__init__()
         self.synthete = Synthete(path, mode, filter, seed, p_valid, p_test)

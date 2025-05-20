@@ -181,7 +181,7 @@ if __name__ == "__main__":
     from salad.data.allpdb import ProteinCropPDB
 
     import salad.modules.config.structure_diffusion as configuration
-    from salad.modules.protein_hallucination import Hallucination
+    from salad.modules.obsolete.protein_hallucination import Hallucination
 
     NUM_DEVICES = len(jax.devices())
     opt = parse_options(

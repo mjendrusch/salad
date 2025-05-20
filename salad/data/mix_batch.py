@@ -1,7 +1,10 @@
+"""This module implements a utility IterableDataset for mixing different datasets."""
+
 import random
 from torch.utils.data import IterableDataset
 
 class MixBatch(IterableDataset):
+    """Produces mixed batches from a list of weigt-dataset pairs."""
     def __init__(self, datasets):
         super().__init__()
         self.datasets = datasets

@@ -11,23 +11,19 @@ from torch.utils.tensorboard import SummaryWriter
 
 from flexloop.simple_loop import (
     training, log, load_loop_state, update_step, valid_step, rebatch_call, State)
-from salad.modules.structure_to_sequence import S2S, S2SEfficient
+from salad.modules.experimental.structure_to_sequence import S2SInterfaceAware
 from salad.modules.config import structure_to_sequence as config_choices
 from flexloop.utils import parse_options
 from flexloop.loop import cast_float
 
 def model_step(config, rebatch=1, is_training=True):
-    module = S2S
-    if config.decoder_depth:
-        module = S2SEfficient
+    module = S2SInterfaceAware
     if not is_training:
         config = deepcopy(config)
         config.eval = True
     def step(data):
         data = jax.tree_util.tree_map(lambda x: jnp.array(x), data)
         data = cast_float(data, dtype=jnp.float32)
-        # FIXME: sharded model?
-        # loss, out = rebatch_call(module(config), rebatch=rebatch)
         loss, out = rebatch_call(
             module(config), rebatch=rebatch)(data)
         res_dict = {

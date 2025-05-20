@@ -1,3 +1,6 @@
+"""This module contains neural network blocks for working with
+point clouds and protein chains."""
+
 from typing import Optional, Union, Any
 
 from salad.aflib.model.geometry import Vec3Array, Rigid3Array
@@ -17,33 +20,20 @@ from salad.modules.utils.geometry import (
     axis_index, index_mean
 )
 
-class FramelessPairEmbedding(hk.Module):
-    def __init__(self, name: Optional[str] = "neq_pair"):
-        super().__init__(name)
-
-    def __call__(self, here_features, here_positions,
-                 there_features, there_positions):
-        pass # TODO
-
-def frameless_pair_features(pos: Vec3Array, center: Vec3Array,
-                            neighbours, scale=0.1):
-    pair_features = []
-    dist = (pos[:, None, :, None] - pos[neighbours, None, :]).norm()
-    dist = dist.reshape(*dist.shape[:-2], -1)
-    pair_features.append(
-        distance_rbf(dist, 0.0, 22.0, 16).reshape(
-            *dist.shape[:-1], -1))
-    dirs = (pos - center[..., None]).normalized()
-    proj = dirs[:, None, :, None].dot(
-        pos[neighbours, None, :] - center[:, None, None, None])
-    proj = proj.reshape(*proj.shape[:-2], -1)
-    pair_features.append(
-        distance_rbf(proj, 0.0, 22.0, 16).reshape(
-            *proj.shape[:-1], -1))
-    pair_features.append(scale * proj)
-    return jnp.concatenate(pair_features, axis=-1)
-
 def distance_features(pos, neighbours=None, d_min=0.0, d_max=22.0, num_rbf=16):
+    """Compute residue pair distance features.
+    
+    Args:
+        pos: residue atom positions of shape (N, M, 3).
+        neighbours: optional neighbour array.
+        d_min: minimum distance for binning. Default: 0.0.
+        d_max: maximum distance for binning. Default: 22.0.
+        num_rbf: number of radial basis functions.
+    Returns:
+        5 * 5 * 16 radial basis functions per residue pair.
+        If a neighbour array was provided, the output has shape (N, K, 400)
+        otherwise it has shape (N, N, 400).
+    """
     if neighbours is None:
         dist = (pos[:, None, :5, None] - pos[None, :, None, :5]).norm()
     else:
@@ -53,6 +43,15 @@ def distance_features(pos, neighbours=None, d_min=0.0, d_max=22.0, num_rbf=16):
     return result
 
 def direction_features(pos, neighbours=None, d_min=0.0, d_max=22.0, num_rbf=16):
+    """Computes residue relative direction features.
+    
+    Args:
+        pos: residue atom positions of shape (N, atoms, 3).
+        neighbours: optional neighbour array.
+    Returns:
+        Direction vectors from the center of each residue frame to
+        all atoms in each of its neighbours (N, K, atoms, 3).
+    """
     frames, _ = extract_aa_frames(pos)
     if neighbours is None:
         local_pos = frames[:, None, None].apply_inverse_to_point(pos[None, :])
@@ -98,18 +97,19 @@ def type_position_features(local, pos, batch, mask, size=32, scale=10.0,
                             type_features(global_type_pos)), axis=-1)
 
 def paired_distance_features(x, y, d_min=0.0, d_max=22.0, num_rbf=16):
+    """Compute distance features for a pair of structures x and y.
+    
+    Args:
+        x, y: residue atom positions of shape (N, atoms, 3).
+        d_min: minimum distance for binning. Default: 0.0.
+        d_max: maximum distance for binning. Default: 22.0.
+        num_rbf: number of radial basis functions.
+    Returns:
+        5 * 5 * 16 radial basis functions per residue pair.
+    """
     dist = (x[..., :, None, :] - y[..., None, :, :]).norm()
     dist = dist.reshape(*dist.shape[:-2], -1)
     return distance_rbf(dist, d_min, d_max, num_rbf).reshape(*dist.shape[:-1], -1)
-
-def position_rotation_features(pos: Vec3Array, neighbours=None):
-    frames, _ = extract_aa_frames(pos)
-    if neighbours is None:
-        rot = frames[:, None].inverse().rotation @ frames[None, :].rotation
-    else:
-        rot = frames[:, None].inverse().rotation @ frames[neighbours].rotation
-    rot = rot.to_array().reshape(*rot.shape, -1)
-    return rot
 
 def rotation_features(frames, neighbours=None):
     """Relative rotation features for a set of residue frames and neighbours.
@@ -117,6 +117,9 @@ def rotation_features(frames, neighbours=None):
     Args:
         frames (Rigid3Array): local coordinate frames for a set of residues.
         neighbours (Optional[array]): neighbours of each residue
+    Returns:
+        Entries of the relative rotation matrix between
+        pairs of neighbouring residues (N, K, 9).
     """
     if neighbours is None:
         rot = frames[:, None].inverse().rotation @ frames[None, :].rotation
@@ -125,13 +128,50 @@ def rotation_features(frames, neighbours=None):
     rot = rot.to_array().reshape(*rot.shape, -1)
     return rot
 
+def position_rotation_features(pos: Vec3Array, neighbours=None):
+    """Relative cotation features computed from atom positions.
+    
+    Args:
+        pos (Vec3Array): residue backbone atom coordinates.
+        neighbours (Optional[array]): neighbours of each residue
+    Returns:
+        Entries of the relative rotation matrix between
+        pairs of neighbouring residues (N, K, 9).
+    """
+    frames, _ = extract_aa_frames(pos)
+    if neighbours is None:
+        rot = frames[:, None].inverse().rotation @ frames[None, :].rotation
+    else:
+        rot = frames[:, None].inverse().rotation @ frames[neighbours].rotation
+    rot = rot.to_array().reshape(*rot.shape, -1)
+    return rot
+
 def paired_rotation_features(x, y):
+    """Compute distance features for a pair of structures x and y.
+    
+    Args:
+        x, y: residue atom positions of shape (N, atoms, 3).
+        neighbours (Optional[array]): neighbours of each residue
+    Returns:
+        Entries of the relative rotation matrix between
+        pairs of residues in x and y.
+    """
     x_frames = make_transform_from_reference(x[..., 0], x[..., 1], x[..., 2])
-    y_frames = make_transform_from_reference(x[..., 0], x[..., 1], x[..., 2])
-    rot = x_frames.inverse().rotation @ y_frames.rotation
+    y_frames = make_transform_from_reference(y[..., 0], y[..., 1], y[..., 2])
+    rot = x_frames.inverse().rotation[:, None] @ y_frames.rotation[None, :]
     return rot.to_array().reshape(*rot.shape, -1)
 
 def pair_vector_features(pos, neighbours=None, scale=0.1):
+    """Compute local coordinate features.
+    
+    Args:
+        pos: residue atom positions of shape (N, atoms, 3).
+        neighbours (Optional[array]): neighbours of each residue
+        scale: position scale factor. Default: 0.1.
+    Returns:
+        Coordinate features of atoms of a residue and its neighbours
+        in the residue's local frame.
+    """
     if neighbours is None:
         neighbours = jnp.broadcast_to(
             jnp.arange(pos.shape[0], dtype=jnp.int32)[None, :],
@@ -145,32 +185,17 @@ def pair_vector_features(pos, neighbours=None, scale=0.1):
         frames[:, None, None].apply_inverse_to_point(pos[neighbours]).to_array(),
     ), axis=-2)
     pair_vectors = Vec3Array.from_array(pair_vectors)
-    length = pair_vectors.norm()
     direction = pair_vectors.normalized().to_array().reshape(
         *pair_vectors.shape[:-1], -1)
     result = jnp.concatenate((
-        # FIXME
-        # distance_rbf(length, 0.0, 22.0, 16).reshape(*length.shape[:2], -1),
         direction,
         scale * pair_vectors.to_array().reshape(
             *pair_vectors.shape[:-1], -1)
     ), axis=-1)
     return result
 
-def paired_vector_features(x, y, scale=0.1):
-    pair_vectors = Vec3Array.from_array(
-        jnp.concatenate((x.to_array(), y.to_array()), axis=-2))
-    length = pair_vectors.norm()
-    direction = pair_vectors.normalized().to_array().reshape(
-        *pair_vectors.shape[:-1], -1)
-    return jnp.concatenate((
-        distance_rbf(length, 0.0, 22.0, 16).reshape(*length.shape[:2], -1),
-        direction,
-        scale * pair_vectors.to_array().reshape(
-            *pair_vectors.shape[:-1], -1)
-    ), axis=-1)
-
 def frame_pair_features(frames, pos, neighbours, d_min=0.0, d_max=22.0, num_rbf=16):
+    """DEPRECATED. Compute frame-derived pair features."""
     pair_features = []
     # distance features:
     dist = (pos[:, None, :5, None] - pos[neighbours, None, :5]).norm()
@@ -185,6 +210,7 @@ def frame_pair_features(frames, pos, neighbours, d_min=0.0, d_max=22.0, num_rbf=
     return jnp.concatenate(pair_features, axis=-1)
 
 def frame_pair_vector_features(frames, pos, neighbours, scale=0.1):
+    """DEPRECATED. Compute frame-derived pair features."""
     local_pos = frames[..., None].apply_inverse_to_point(pos)
     local_neighbours = frames[..., None, None].apply_inverse_to_point(
         pos[neighbours])
@@ -201,6 +227,7 @@ def frame_pair_vector_features(frames, pos, neighbours, scale=0.1):
     return features
 
 class SparsePairUpdate(hk.Module):
+    """Sparse pair feature update."""
     def __init__(self, config, name: str | None = "sparse_pair_update"):
         super().__init__(name)
         self.config = config
@@ -235,20 +262,25 @@ class SparsePairUpdate(hk.Module):
         return pair
 
 class LinearToPoints(hk.Module):
+    """Linear layer returning points in 3D space."""
     def __init__(self, size=8, init="linear", name: Optional[str] = "point_linear"):
         super().__init__(name=name)
         self.size = size
         self.init = init
 
     def __call__(self, data: jnp.ndarray, frames: Rigid3Array):
+        # project input data
         raw = Linear(self.size * 3, bias=False, initializer=self.init)(data).astype(jnp.float32)
+        # reshape into an array of 3D vectors
         points = Vec3Array.from_array(
             raw.reshape(*raw.shape[:-1], self.size, 3)
         )
+        # project into global frame using local residue frames
         points = frames[..., None].apply_to_point(points)
         return points.to_array().astype(data.dtype)
 
 class VectorLinear(Linear):
+    """Equivariant vector-to-vector linear layer."""
     def __init__(self, size: int = 128,
                  initializer: Union[str, hk.initializers.Initializer] = "zeros",
                  name: Optional[str] = "vector_linear"):
@@ -258,12 +290,18 @@ class VectorLinear(Linear):
         result = vec
         if isinstance(vec, Vec3Array):
             result = vec.to_array()
+        # turn an array of 3D vectors into 3 arrays of numbers
+        # apply a linear layer without bias
+        # turn the result back into an array of 3D vectors
+        # this operation is a linear combination of the input vectors
+        # and therefore E(3) equivariant.
         result = jnp.swapaxes(super().__call__(jnp.swapaxes(result, -1, -2)), -1, -2)
         if isinstance(vec, Vec3Array):
             result = Vec3Array.from_array(result)
         return result
 
 class VectorMLP(MLP):
+    """Equivariant vector-to-vector MLP."""
     def __init__(self, size: int = 64,
                  out_size: int = None,
                  depth: int = 2,
@@ -279,19 +317,27 @@ class VectorMLP(MLP):
         out_size = self.out_size or vector.shape[-1]
         new_vector = vector
         for _ in range(self.depth - 1):
+            # scale the current vector features using a gate
+            # computed from the current scalar features
+            # and apply a linear layer.
             scale = jax.nn.gelu(Linear(new_vector.shape[-1])(scalar))
             new_vector = VectorLinear(
                 self.size, initializer=init_glorot())(new_vector * scale)
+            # compute a direction vector from the current vector features
             direction = VectorLinear(
                 1, initializer=init_glorot())(new_vector).normalized()
+            # use it to apply an equivariant directional nonlinearity
             new_vector = vector_nonlinearity(
                 new_vector, direction, activation=jax.nn.gelu)
+        # scale the output by a gate computed from scalar features
+        # and apply a final linear layer.
         scale = jax.nn.gelu(Linear(new_vector.shape[-1])(scalar))
         new_vector = VectorLinear(
             out_size, initializer=self.final_init)(new_vector * scale)
         return new_vector
 
 class VectorLayerNorm(hk.Module):
+    """Equivariant vector layer norm."""
     def __init__(self, name: Optional[str] = "vector_layer_norm"):
         super().__init__(name)
 
@@ -303,12 +349,14 @@ class VectorLayerNorm(hk.Module):
         return scale * vec
 
 def vector_std_norm(vec: Vec3Array) -> Vec3Array:
+    """Normalize an array of vectors by its standard deviation."""
     norm = vec.norm()
     var = jnp.maximum(((norm - norm.mean(axis=-1, keepdims=True)) ** 2).sum(axis=-1, keepdims=True), 1e-6)
     vec = vec * jax.lax.rsqrt(var)
     return vec
 
 def vector_mean_norm(vec: Vec3Array) -> Vec3Array:
+    """Normalize an array of vectors by the mean of their norm."""
     vec = vec.to_array()
     vec = vec - vec.mean(axis=-2, keepdims=True)
     vec /= jax.lax.sqrt(
@@ -318,69 +366,13 @@ def vector_mean_norm(vec: Vec3Array) -> Vec3Array:
 
 def vector_nonlinearity(vector: Vec3Array, direction: Vec3Array,
                         activation=jax.nn.relu):
+    """Apply an equivariant nonlinearity in a direction."""
     agreement = direction.dot(vector)
     scale = activation(agreement)
     return scale * vector
 
-def sum_equivariant_pair_embedding(config, use_local=True):
-    c = config
-    def inner(local, pos, neighbours, resi, chain, batch, mask):
-        pair_mask = mask[:, None] * mask[neighbours] * (neighbours != -1)
-        frames, _ = extract_aa_frames(pos)
-        features = 0.0
-        if c.pair_vector_features:
-            features += Linear(c.pair_size, bias=False)(
-                frame_pair_vector_features(
-                    frames, pos, neighbours,
-                    c.position_scale))
-        features += Linear(c.pair_size, bias=False)(
-            sequence_relative_position(
-                c.relative_position_encoding_max, one_hot=True,
-                cyclic=c.cyclic, identify_ends=c.identify_ends)(
-                    resi, chain, batch, neighbours=neighbours
-                ))
-        if use_local:
-            local_features = Linear(
-                c.pair_size, bias=False)(local)[:, None]
-            local_features += Linear(
-                c.pair_size, bias=False)(local)[neighbours]
-            features += local_features
-        features = hk.LayerNorm([-1], True, True)(features)
-        features = jnp.where(pair_mask[..., None], features, 0)
-        return features, pair_mask
-    return inner
-
-def equivariant_pair_embedding(config, use_local=True):
-    c = config
-    def inner(local, pos, neighbours, resi, chain, batch, mask):
-        pair_mask = mask[:, None] * mask[neighbours] * (neighbours != -1)
-        frames, _ = extract_aa_frames(pos)
-        features = [frame_pair_features(frames, pos, neighbours)]
-        if c.pair_vector_features:
-            features.append(frame_pair_vector_features(
-                    frames, pos, neighbours,
-                    c.position_scale))
-        features.append(sequence_relative_position(
-            c.relative_position_encoding_max, one_hot=True,
-            cyclic=c.cyclic, identify_ends=c.identify_ends)(
-                resi, chain, batch, neighbours=neighbours
-            ))
-        if use_local:
-            local_features = Linear(
-                c.pair_size, bias=True,
-                initializer=init_glorot())(local)[:, None]
-            local_features += Linear(
-                c.pair_size, bias=True,
-                initializer=init_glorot())(local)[neighbours]
-            features.append(local_features)
-        features = jnp.concatenate(features, axis=-1)
-        features = Linear(c.pair_size, initializer=init_glorot())(features)
-        features = hk.LayerNorm([-1], True, True)(features)
-        features = jnp.where(pair_mask[..., None], features, 0)
-        return features, pair_mask
-    return inner
-
 class SparseStructureMessage(hk.Module):
+    """Message passing wrapper."""
     def __init__(self, config,
                  name: Optional[str] = "sparse_structure_message"):
         super().__init__(name)
@@ -399,6 +391,7 @@ class SparseStructureMessage(hk.Module):
         return local_update
 
 class SparseStructureAttention(hk.Module):
+    """Sparse attention wrapper."""
     def __init__(self, config, normalize=True,
                  name: Optional[str] = "sparse_structure_attn"):
         super().__init__(name)
@@ -425,6 +418,7 @@ class SparseStructureAttention(hk.Module):
         return local_update
 
 class SemiEquivariantSparseStructureAttention(hk.Module):
+    """Sparse attention wrapper."""
     def __init__(self, config, normalize=False,
                  name: Optional[str] = "se_sparse_structure_attn"):
         super().__init__(name)
@@ -435,13 +429,6 @@ class SemiEquivariantSparseStructureAttention(hk.Module):
                  resi, chain, batch, mask):
         c = self.config
         final_init = c.update_init if c.update_init else "zeros"
-        # if c.multi_query:
-        #     local_update = SparseSemiEquivariantMultiQueryAttention(
-        #         heads=c.heads, size=c.key_size,
-        #         final_init=final_init, normalize=self.normalize)(
-        #         local, pair, pos,
-        #         neighbours, pair_mask)
-        # else:
         local_update = SparseSemiEquivariantPointAttention(
             heads=c.heads, size=c.key_size,
             final_init=final_init, normalize=self.normalize)(
@@ -450,6 +437,7 @@ class SemiEquivariantSparseStructureAttention(hk.Module):
         return local_update
 
 class SparseInvariantMultiQueryAttention(hk.Module):
+    """Sparse IPA with multi-query attention."""
     def __init__(self, size=32, heads=4,
                  query_points=8, value_points=8,
                  final_init="zeros", normalize=False,
@@ -514,6 +502,7 @@ class SparseInvariantMultiQueryAttention(hk.Module):
         return Linear(local.shape[-1], bias=False, initializer=self.final_init)(result)
 
 class SparseAttention(hk.Module):
+    """Sparse attention without point bias."""
     def __init__(self, size=32, heads=4,
                  final_init="zeros", normalize=False,
                  name: Optional[str]="sparse_attn"):
@@ -568,6 +557,7 @@ class SparseAttention(hk.Module):
         return out.astype(local.dtype)
 
 class DenseNonEquivariantPointAttention(hk.Module):
+    """EXPERIMENTAL. Non-equivariant point attention"""
     def __init__(self, size=32, heads=4,
                  query_points=8, value_points=8,
                  final_init="zeros", normalize=False,
@@ -601,34 +591,19 @@ class DenseNonEquivariantPointAttention(hk.Module):
             return jnp.concatenate((jnp.sin(val), jnp.cos(val)), axis=-1).mean(axis=-2)
         same_batch = batch[:, None] == batch[None, :]
         pair_mask = mask[:, None] * mask[None, :] * same_batch
-        # xyz_embedding = fourier_xyz_embedding(
-        #     pos[:, 1], size=local.shape[-1])
+
         query = hk.LayerNorm([-1], True, True)(attention_component(local))
-        key = hk.LayerNorm([-1], True, True)(attention_component(local)) # heads=1)
-        value = attention_component(local) # heads=1
+        key = hk.LayerNorm([-1], True, True)(attention_component(local))
+        value = attention_component(local)
         query_points = attention_point(local, pos)
-        key_points = attention_point(local, pos) # heads=1
-        value_points = attention_point(local, pos) # heads=1
+        key_points = attention_point(local, pos)
+        value_points = attention_point(local, pos)
         value = jnp.concatenate((value, value_points.reshape(*value.shape[:-1], -1)), axis=-1)
         inner_product_attention = jnp.einsum("ihc,jhc->ijh", query * jnp.sqrt(1 / query.shape[-1]), key)
         point_attention = -((query_points[:, None] - key_points[None, :]) ** 2).sum(axis=(-1, -2))
         resi_dist = jnp.clip(resi[:, None] - resi[None, :], -32, 32)# / 64
         other_chain = (chain[:, None] != chain[None, :])
-        # next_factor = jax.nn.softplus(
-        #     hk.get_parameter("resi_next_factor",
-        #                      (self.heads,),
-        #                      init=hk.initializers.Constant(jnp.log(jnp.exp(1.) - 1.))))
-        # prev_factor = jax.nn.softplus(
-        #     hk.get_parameter("resi_prev_factor",
-        #                      (self.heads,),
-        #                      init=hk.initializers.Constant(jnp.log(jnp.exp(1.) - 1.))))
-        # chain_bias = other_chain[..., None] * jax.nn.softplus(hk.get_parameter(
-        #     "chain_bias", (self.heads,),
-        #     init=hk.initializers.Constant(jnp.log(jnp.exp(1.) - 1.))))
-        # resi_attention = -jnp.where(resi_dist[..., None] >= 0,
-        #                             next_factor * abs(resi_dist)[..., None],
-        #                             prev_factor * abs(resi_dist)[..., None]) / 64 - chain_bias
-        # if self.use_pair:
+
         ca = Vec3Array.from_array(10 * pos[:, 1])
         dist = (ca[:, None] - ca[None, :]).norm()
         dist = distance_rbf(dist, bins=16)
@@ -649,8 +624,6 @@ class DenseNonEquivariantPointAttention(hk.Module):
             init=hk.initializers.Constant(jnp.log(jnp.exp(1.) - 1.))
         )
         # single pair operation
-        # rel = (pos[:, None, :, None] - pos[None, :, None, :]).reshape(local.shape[0], local.shape[0], -1)
-        # rel = Linear(value.shape[-1], bias=False, initializer="linear")(rel)[:, :, None, :]
         point_scale = jax.nn.softplus(point_scale.reshape(1, 1, self.heads)) * w_C / 2
         attn = (inner_product_attention + point_scale * point_attention + bias) * jnp.sqrt(1 / 3)
         attn = jnp.where(pair_mask[..., None], attn, -1e9)
@@ -658,10 +631,10 @@ class DenseNonEquivariantPointAttention(hk.Module):
         attn = jnp.where(pair_mask[..., None], attn, 0)
         # add pair value
         result = jnp.einsum("ijh,ijhc->ihc", attn, pair).reshape(local.shape[0], -1)
-        # gate = Linear(local.shape[-1], bias=False, initializer="relu")(local)
-        return Linear(local.shape[-1], bias=False, initializer="zeros")(result)# * jax.nn.gelu(gate) 
+        return Linear(local.shape[-1], bias=False, initializer="zeros")(result) 
 
 class SparseSemiEquivariantPointAttention(hk.Module):
+    """Sparse IPA with additional non-equivariant features."""
     def __init__(self, size=32, heads=4,
                  query_points=8, value_points=8,
                  final_init="zeros", normalize=False,
@@ -742,51 +715,8 @@ class SparseSemiEquivariantPointAttention(hk.Module):
 
         return out.astype(local.dtype)
 
-# # TODO
-# class PairFreeGeometricAttention(hk.Module):
-#     def __init__(self, size=32, heads=4, query_points=4,
-#                  value_points=8, final_init="zeros",
-#                  name = "pfg_attn"):
-#         super().__init__(name)
-#         self.size = size
-#         self.heads = heads + query_points
-#         self.value_points = value_points
-#         self.query_points = query_points
-#         self.final_init = final_init
-
-#     def __call__(self, local, pos, mask):
-#         if self.normalize:
-#             local = hk.LayerNorm([-1], True, True)(local)
-#         pos = Vec3Array.from_array(pos)
-#         frames, _ = extract_aa_frames(pos)
-#         qkv = Linear(
-#             self.heads * 3 * self.size,
-#             bias=False, name="qkv"
-#         )(
-#             local
-#         ).reshape(list(local.shape[:-1]) + [self.heads, 3 * self.size])
-#         q, k, v = jnp.split(qkv, 3, axis=-1)
-#         q = hk.LayerNorm([-1], True, True)(q)
-#         k = hk.LayerNorm([-1], True, True)(k)
-#         qkv_g = LinearToPoints(
-#             self.heads * (2 * self.query_points + self.value_points),
-#             name="qkv_global"
-#         )(local, frames)
-#         qkv_g = qkv_g.reshape(*qkv_g.shape[:-2], self.heads, -1, 3)
-#         q_g, k_g, v_g = jnp.split(
-#             qkv_g,
-#             [self.query_points, 2 * self.query_points],
-#             axis=-2
-#         )
-#         centers = pos[:, 1]
-#         dirs = (q_g - centers[:, None]).normalized()
-#         rels = k_g[None, :] - centers[:, None, None]
-#         dists = rels.norm()
-#         locs = dirs[:, None].dot(rels)
-#         self_gate = 
-#         pass # TODO
-
 class SparseInvariantPointAttention(hk.Module):
+    """Sparse IPA."""
     def __init__(self, size=32, heads=4,
                  query_points=8, value_points=8,
                  final_init="zeros", normalize=False,
@@ -868,6 +798,7 @@ class SparseInvariantPointAttention(hk.Module):
         return out.astype(local.dtype)
 
 def atom_pool(factor=8, num_in=64, num_out=8):
+    """DEPRECATED."""
     def inner(positions, resi, chain, batch: jnp.ndarray, mask: jnp.ndarray):
         positions = Vec3Array.from_array(positions)
         # random subset of residues
@@ -883,23 +814,60 @@ def atom_pool(factor=8, num_in=64, num_out=8):
         return centers, in_neighbours, out_neighbours
     return inner
 
-# use atom pool as follows:
-# 1. pool into random centers
-# 2. transfer features from in_neigbours into centers
-# 3. attention between centers
-# 4. MLP on centers
-# 5. transfer features from centers to atoms along out_neighbours
-# 6. MLP on atoms
-# 7. update atom positions
-# 8. repeat from 1.
+def sum_equivariant_pair_embedding(config, use_local=True):
+    c = config
+    def inner(local, pos, neighbours, resi, chain, batch, mask):
+        pair_mask = mask[:, None] * mask[neighbours] * (neighbours != -1)
+        frames, _ = extract_aa_frames(pos)
+        features = 0.0
+        if c.pair_vector_features:
+            features += Linear(c.pair_size, bias=False)(
+                frame_pair_vector_features(
+                    frames, pos, neighbours,
+                    c.position_scale))
+        features += Linear(c.pair_size, bias=False)(
+            sequence_relative_position(
+                c.relative_position_encoding_max, one_hot=True,
+                cyclic=c.cyclic, identify_ends=c.identify_ends)(
+                    resi, chain, batch, neighbours=neighbours
+                ))
+        if use_local:
+            local_features = Linear(
+                c.pair_size, bias=False)(local)[:, None]
+            local_features += Linear(
+                c.pair_size, bias=False)(local)[neighbours]
+            features += local_features
+        features = hk.LayerNorm([-1], True, True)(features)
+        features = jnp.where(pair_mask[..., None], features, 0)
+        return features, pair_mask
+    return inner
 
-class AtomEncoder(hk.Module):
-    def __init__(self, size=64, num_points=16,
-                 num_neighbours=8, name: Optional[str] = "atom_encoder"):
-        super().__init__(name)
-        self.size = size
-        self.num_points = num_points
-        self.num_neighbours = num_neighbours
-
-    def __call__(self, atom_features, positions, atom_id, batch, mask):
-        pass # TODO
+def equivariant_pair_embedding(config, use_local=True):
+    c = config
+    def inner(local, pos, neighbours, resi, chain, batch, mask):
+        pair_mask = mask[:, None] * mask[neighbours] * (neighbours != -1)
+        frames, _ = extract_aa_frames(pos)
+        features = [frame_pair_features(frames, pos, neighbours)]
+        if c.pair_vector_features:
+            features.append(frame_pair_vector_features(
+                    frames, pos, neighbours,
+                    c.position_scale))
+        features.append(sequence_relative_position(
+            c.relative_position_encoding_max, one_hot=True,
+            cyclic=c.cyclic, identify_ends=c.identify_ends)(
+                resi, chain, batch, neighbours=neighbours
+            ))
+        if use_local:
+            local_features = Linear(
+                c.pair_size, bias=True,
+                initializer=init_glorot())(local)[:, None]
+            local_features += Linear(
+                c.pair_size, bias=True,
+                initializer=init_glorot())(local)[neighbours]
+            features.append(local_features)
+        features = jnp.concatenate(features, axis=-1)
+        features = Linear(c.pair_size, initializer=init_glorot())(features)
+        features = hk.LayerNorm([-1], True, True)(features)
+        features = jnp.where(pair_mask[..., None], features, 0)
+        return features, pair_mask
+    return inner

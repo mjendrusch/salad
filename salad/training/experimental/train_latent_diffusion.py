@@ -11,21 +11,20 @@ from torch.utils.tensorboard import SummaryWriter
 
 from flexloop.simple_loop import (
     training, log, load_loop_state, update_step, valid_step, rebatch_call, State)
-from salad.modules.structure_to_sequence import S2SInterfaceAware
-from salad.modules.config import structure_to_sequence as config_choices
+from salad.modules.experimental.latent_diffusion import LatentDiffusion
+from salad.modules.config import latent_diffusion as config_choices
 from flexloop.utils import parse_options
 from flexloop.loop import cast_float
 
 def model_step(config, rebatch=1, is_training=True):
-    module = S2SInterfaceAware
+    module = LatentDiffusion
     if not is_training:
         config = deepcopy(config)
         config.eval = True
     def step(data):
         data = jax.tree_util.tree_map(lambda x: jnp.array(x), data)
         data = cast_float(data, dtype=jnp.float32)
-        loss, out = rebatch_call(
-            module(config), rebatch=rebatch)(data)
+        loss, out = rebatch_call(module(config), rebatch=rebatch)(data)
         res_dict = {
             f"{name}_loss": item
             for name, item in out["losses"].items()
@@ -33,15 +32,19 @@ def model_step(config, rebatch=1, is_training=True):
         return cast_float(loss, jnp.float32), cast_float(res_dict, jnp.float32)
     return step
 
-def make_training_inner(optimizer, step, data, accumulate=1, multigpu=True, ema_weight=0.999, nanhunt=False):
-    update = update_step(step, optimizer, accumulate=accumulate, multigpu=multigpu, nanhunt=False)
+def make_training_inner(optimizer, step, data, accumulate=1, multigpu=True,
+                        ema_weight=0.999, nanhunt=False, with_state=False):
+    update = update_step(step, optimizer, accumulate=accumulate, multigpu=multigpu, nanhunt=False, with_state=with_state)
+    def _ema_aux(params, ema_params):
+        ema_params = jax.tree_util.tree_map(lambda x, y: ema_weight * x + (1 - ema_weight) * y, ema_params, params)
+        return ema_params
+    ema_aux = jax.jit(_ema_aux)
     def ema_step(params, loop_state):
         aux_state = loop_state.aux_state
         if "ema_params" not in loop_state.aux_state:
             aux_state = dict(ema_params=jax.tree_util.tree_map(lambda x: x, params))
         else:
-            ema_params = loop_state.aux_state["ema_params"]
-            ema_params = jax.tree_util.tree_map(lambda x, y: ema_weight * x + (1 - ema_weight) * y, ema_params, params)
+            ema_params = ema_aux(loop_state.aux_state["ema_params"], params)
             aux_state = dict(ema_params=ema_params)
         return aux_state
     def training_inner(loop_state: State):
@@ -85,22 +88,12 @@ def cosine_decay_schedule(start_lr, decay_lr, warmup_steps, decay_steps):
         return result
     return schedule
 
-def replicate_loop_state(state):
-    devices = jax.devices()
-    return State(
-        state.key,
-        state.step_id,
-        jax.device_put_replicated(state.params, devices),
-        jax.device_put_replicated(state.opt_state, devices),
-        jax.device_put_replicated(state.aux_state, devices)
-    )
-
 if __name__ == "__main__":
-    from salad.data.allpdb import BatchedProteinPDBStream, ProteinSMOLNeighboursPDB
+    from salad.data.allpdb import BatchedProteinPDBStream
     from flexloop.data import BatchStream
 
     opt = parse_options(
-        "train a protein diffusion model on PDB.",
+        "train a distance-to-structure decoder on PDB.",
         path="network/",
         config="default",
         data_path="",
@@ -118,16 +111,15 @@ if __name__ == "__main__":
         accumulate=1,
         jax_seed=42,
         multigpu="True",
-        nanhunt="False",
         suffix="1"
     )
-    NUM_DEVICES = jax.device_count()
     multigpu = opt.multigpu == "True"
-    if opt.nanhunt == "True":
-        multigpu = False
+    NUM_DEVICES = jax.device_count()
+    if not multigpu:
         NUM_DEVICES = 1
+    config = getattr(config_choices, opt.config)
     path = opt.path
-    path = f"{path}/salad/adm-{opt.config}-{opt.num_aa}-{opt.suffix}"
+    path = f"{path}/salad/halad-{opt.config}-{opt.num_aa}-{opt.suffix}"
     writer = SummaryWriter(path)
 
     print("Attempting to load dataset...")
@@ -135,10 +127,9 @@ if __name__ == "__main__":
                                    seqres_aa="clusterSeqresAA",
                                    cutoff_resolution=4.0,
                                    p_complex=opt.p_complex,
-                                   size=opt.num_aa,
+                                   size=1024,
                                    min_size=16,
-                                   max_size=opt.num_aa,
-                                   base_dataset=ProteinSMOLNeighboursPDB)
+                                   max_size=1024)
     data = iter(BatchStream(data, num_workers=32,
                             accumulate=opt.rebatch * opt.accumulate * NUM_DEVICES,
                             prefetch_factor=32))
@@ -150,31 +141,36 @@ if __name__ == "__main__":
                                          min_size=16,
                                          max_size=1024,
                                          start_date="01/01/22",
-                                         cutoff_date="12/31/23",
-                                         base_dataset=ProteinSMOLNeighboursPDB)
+                                         cutoff_date="12/31/23")
     valid_data = iter(BatchStream(valid_data, num_workers=8,
                                   accumulate=opt.rebatch * opt.accumulate * NUM_DEVICES,
                                   prefetch_factor=8))
     print("Dataset successfully loaded.")
 
-    config = getattr(config_choices, opt.config)
+    with_state = config.state is not None
     key = jax.random.PRNGKey(opt.jax_seed)
-    rebatch = opt.rebatch
-    # FIXME: sharded rebatch?
-    init, step = transformed = hk.transform(model_step(config, rebatch=rebatch, is_training=True))
-    _, valid = hk.transform(model_step(config, rebatch=rebatch, is_training=False))
+    transform_function = hk.transform_with_state if with_state else hk.transform
+    transformed_single = transform_function(
+        model_step(deepcopy(config), rebatch=1, is_training=True))
+    if opt.multigpu == "True":
+        config.multigpu = True
+    init, step = transformed = transform_function(
+        model_step(config, rebatch=opt.rebatch, is_training=True))
+    _, valid = transform_function(
+        model_step(config, rebatch=opt.rebatch, is_training=False))
 
     print("Initializing model parameters...")
     item_0 = next(data)
     print("INPUT OF SHAPE:")
     for name, value in item_0.items():
         print("  ", name, value.shape)
-    init_batch = jax.tree_util.tree_map(lambda x: x[:rebatch * opt.accumulate * 100], item_0)
+    init_batch = jax.tree_util.tree_map(lambda x: x[:opt.rebatch * 100], item_0)
+    tabulate_batch = jax.tree_util.tree_map(lambda x: x[:100], item_0)
     params = init(key, init_batch)
     print("Model parameters initialized.")
 
     print("Writing model description...")
-    tabulated = hk.experimental.tabulate(transformed)(init_batch)
+    tabulated = hk.experimental.tabulate(transformed_single)(tabulate_batch)
     with open(f"{path}/model_description", "w") as f:
       f.write(tabulated)
     print("Model description written.")
@@ -193,7 +189,10 @@ if __name__ == "__main__":
         # scale resulting learning rate by a cosine schedule
         optax.scale_by_schedule(schedule),
         optax.scale(-1.0))
-    opt_state = optimizer.init(params)
+    if with_state:
+        opt_state = optimizer.init(params[0])
+    else:
+        opt_state = optimizer.init(params)
     aux_state = {}
     print("Optimizer initialized.")
 
@@ -205,21 +204,16 @@ if __name__ == "__main__":
         make_training_inner(optimizer, step, data,
                             accumulate=opt.accumulate,
                             multigpu=multigpu,
-                            ema_weight=opt.ema_weight),
+                            ema_weight=opt.ema_weight,
+                            with_state=with_state),
         valid_inner=make_valid_inner(valid, valid_data,
                                      multigpu=multigpu,
-                                     with_state=False),
-        valid_interval=100,
+                                     with_state=with_state),
         max_steps=total_steps,
+        valid_interval=100,
         logger=log())
     print("Recovering previous state, if available...")
     loop_state = load_loop_state(path) or loop_state
-    # FIXME: explicit replication
-    # if multigpu:
-    #     loop_state = replicate_loop_state(loop_state)
-    # FIXME: explicit replication
-    # if multigpu:
-    #     opt_state = jax.device_put_replicated(opt_state)
     print("Starting training...")
     print(f"Log files and tensorboard records will be written to {path}")
     training_loop(writer, loop_state)

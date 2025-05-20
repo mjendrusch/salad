@@ -11,13 +11,13 @@ from torch.utils.tensorboard import SummaryWriter
 
 from flexloop.simple_loop import (
     training, log, load_loop_state, update_step, valid_step, rebatch_call, State)
-from salad.modules.latent_diffusion import LatentDiffusion
-from salad.modules.config import latent_diffusion as config_choices
+from salad.modules.experimental.distance_to_structure_decoder import DistanceStructureDecoder
+from salad.modules.config import distance_to_structure_decoder as config_choices
 from flexloop.utils import parse_options
 from flexloop.loop import cast_float
 
 def model_step(config, rebatch=1, is_training=True):
-    module = LatentDiffusion
+    module = DistanceStructureDecoder
     if not is_training:
         config = deepcopy(config)
         config.eval = True
@@ -32,48 +32,30 @@ def model_step(config, rebatch=1, is_training=True):
         return cast_float(loss, jnp.float32), cast_float(res_dict, jnp.float32)
     return step
 
-def make_training_inner(optimizer, step, data, accumulate=1, multigpu=True,
-                        ema_weight=0.999, nanhunt=False, with_state=False):
-    update = update_step(step, optimizer, accumulate=accumulate, multigpu=multigpu, nanhunt=False, with_state=with_state)
-    def _ema_aux(params, ema_params):
-        ema_params = jax.tree_util.tree_map(lambda x, y: ema_weight * x + (1 - ema_weight) * y, ema_params, params)
-        return ema_params
-    ema_aux = jax.jit(_ema_aux)
-    def ema_step(params, loop_state):
-        aux_state = loop_state.aux_state
-        if "ema_params" not in loop_state.aux_state:
-            aux_state = dict(ema_params=jax.tree_util.tree_map(lambda x: x, params))
-        else:
-            ema_params = ema_aux(loop_state.aux_state["ema_params"], params)
-            aux_state = dict(ema_params=ema_params)
-        return aux_state
+def make_training_inner(optimizer, step, data, accumulate=1, multigpu=True, ema_weight=0.999, nanhunt=False):
+    update = update_step(step, optimizer, accumulate=accumulate, multigpu=multigpu, nanhunt=False)
     def training_inner(loop_state: State):
         t = time.time()
         item = next(data)
         load_time = time.time() - t
         key, subkey = jax.random.split(loop_state.key)
         tr = time.time()
-        aux_state = ema_step(loop_state.params, loop_state)
         _, loggables, params, opt_state = update(loop_state.params, loop_state.opt_state, subkey, item)
         step_time = time.time() - tr
         new_state = State(key, loop_state.step_id, params, opt_state, aux_state)
-        checkpointables = {
-            "checkpoint": params,
-            "checkpoint-ema": aux_state["ema_params"]
-        }
+        checkpointables = dict(checkpoint=params)
         total_time = time.time() - t
         print(f"Step {loop_state.step_id}, load time {load_time:.3f} s, step time {step_time:.3f} s, total {total_time:.3f} s")
         return new_state, loggables, checkpointables
     return training_inner
 
-def make_valid_inner(step, data, multigpu=True, with_state=False):
-    step = valid_step(step, multigpu=multigpu, with_state=with_state)
+def make_valid_inner(step, data, multigpu=True):
+    step = valid_step(step, multigpu=multigpu)
     def valid_inner(loop_state: State):
         t = time.time()
         item = next(data)
-        params = loop_state.params
         res_dict = step(
-            params, loop_state.key, item)
+            loop_state.params, loop_state.key, item)
         print(f"Computed valid batch in {time.time() - t:.3f} seconds.")
         return res_dict
     return valid_inner
@@ -117,9 +99,8 @@ if __name__ == "__main__":
     NUM_DEVICES = jax.device_count()
     if not multigpu:
         NUM_DEVICES = 1
-    config = getattr(config_choices, opt.config)
     path = opt.path
-    path = f"{path}/salad/halad-{opt.config}-{opt.num_aa}-{opt.suffix}"
+    path = f"{path}/salad/d2s-{opt.config}-{opt.num_aa}-{opt.suffix}"
     writer = SummaryWriter(path)
 
     print("Attempting to load dataset...")
@@ -147,16 +128,11 @@ if __name__ == "__main__":
                                   prefetch_factor=8))
     print("Dataset successfully loaded.")
 
-    with_state = config.state is not None
+    config = getattr(config_choices, opt.config)
     key = jax.random.PRNGKey(opt.jax_seed)
-    transform_function = hk.transform_with_state if with_state else hk.transform
-    transformed_single = transform_function(
-        model_step(deepcopy(config), rebatch=1, is_training=True))
-    if opt.multigpu == "True":
-        config.multigpu = True
-    init, step = transformed = transform_function(
+    init, step = transformed = hk.transform(
         model_step(config, rebatch=opt.rebatch, is_training=True))
-    _, valid = transform_function(
+    _, valid = hk.transform(
         model_step(config, rebatch=opt.rebatch, is_training=False))
 
     print("Initializing model parameters...")
@@ -165,12 +141,11 @@ if __name__ == "__main__":
     for name, value in item_0.items():
         print("  ", name, value.shape)
     init_batch = jax.tree_util.tree_map(lambda x: x[:opt.rebatch * 100], item_0)
-    tabulate_batch = jax.tree_util.tree_map(lambda x: x[:100], item_0)
     params = init(key, init_batch)
     print("Model parameters initialized.")
 
     print("Writing model description...")
-    tabulated = hk.experimental.tabulate(transformed_single)(tabulate_batch)
+    tabulated = hk.experimental.tabulate(transformed)(init_batch)
     with open(f"{path}/model_description", "w") as f:
       f.write(tabulated)
     print("Model description written.")
@@ -189,10 +164,7 @@ if __name__ == "__main__":
         # scale resulting learning rate by a cosine schedule
         optax.scale_by_schedule(schedule),
         optax.scale(-1.0))
-    if with_state:
-        opt_state = optimizer.init(params[0])
-    else:
-        opt_state = optimizer.init(params)
+    opt_state = optimizer.init(params)
     aux_state = {}
     print("Optimizer initialized.")
 
@@ -204,11 +176,9 @@ if __name__ == "__main__":
         make_training_inner(optimizer, step, data,
                             accumulate=opt.accumulate,
                             multigpu=multigpu,
-                            ema_weight=opt.ema_weight,
-                            with_state=with_state),
+                            ema_weight=opt.ema_weight),
         valid_inner=make_valid_inner(valid, valid_data,
-                                     multigpu=multigpu,
-                                     with_state=with_state),
+                                     multigpu=multigpu),
         max_steps=total_steps,
         valid_interval=100,
         logger=log())

@@ -17,7 +17,7 @@ from salad.aflib.common.protein import to_pdb, Protein, from_pdb_string
 from salad.aflib.model.all_atom_multimer import atom14_to_atom37, get_atom37_mask
 from salad.aflib.model.geometry import Vec3Array, Rigid3Array, Rot3Array
 
-from salad.modules.gradient_diffusion import (
+from salad.modules.experimental.gradient_diffusion import (
     StructureDiffusionInference, sigma_scale_cosine, sigma_scale_framediff)
 from salad.modules.config import noise_schedule_benchmark as config_choices
 from flexloop.utils import parse_options

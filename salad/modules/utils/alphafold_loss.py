@@ -1,10 +1,7 @@
-# TODO TODO TODO: clean this shit up
-
-# module packaging AlphaFold loss into managable
-# functions / sublosses
+"""This module contains losses ported over from AlphaFold.
+In salad, we only use the violation loss"""
 
 from functools import partial
-import numbers
 from typing import Any, Dict, Mapping, Text, Tuple, Optional
 from typing_extensions import TypedDict
 from salad.aflib.model.geometry.rigid_matrix_vector import Float
@@ -44,38 +41,6 @@ class ValueType(TypedDict):
   final_atom14_positions: jnp.ndarray
   sidechains: SidechainType
   traj: jnp.ndarray
-
-def backbone_fape(prediction: Vec3Array, ground_truth: Vec3Array, batch, chain, mask):
-    prediction = prediction.to_array().reshape(-1, *prediction.shape[2:], 3)
-    prediction = Vec3Array.from_array(prediction)
-    pframes, _ = extract_aa_frames(prediction)
-    pframes = pframes.to_array()
-    pframes = pframes.reshape(*prediction_shape[:-1], *pframes.shape[-2:])
-    pframes = Rigid3Array.from_array(pframes)
-    prediction = prediction.to_array().reshape(*prediction_shape, 3)
-    prediction = Vec3Array.from_array(prediction)
-    gframes, _ = extract_aa_frames(ground_truth)
-    pglobal = pframes[:, :, None, None].apply_inverse_to_point(prediction[:, None, :, :])
-    gglobal = gframes[:, None, None].apply_inverse_to_point(ground_truth[None, :, :])
-    fape = jnp.where(pair_mask[None, ...], (pglobal - gglobal[None]).norm(), 0)
-    fape = fape.sum(axis=-1) / jnp.maximum(pair_mask[None, ...].sum(axis=-1), 1e-6)
-    rotamer_error = jnp.diagonal(fape, 0, -2, -1)
-    rotamer_loss = rotamer_error.sum(axis=-1) / jnp.maximum(all_atom_mask.any(axis=-1).sum(axis=-1), 1e-6)
-    rotamer_error = rotamer_error[-1]
-    pair_mask = pair_mask.any(axis=-1)
-    final_ae = fape[-1]
-    same_chain = (chain[:, None] == chain[None, :]) * pair_mask
-    other_chain = (chain[:, None] != chain[None, :]) * pair_mask
-    intra_coin = jnp.zeros_like(jax.random.bernoulli(hk.next_rng_key(), 0.1, batch.shape))
-    inter_coin = jnp.zeros_like(jax.random.bernoulli(hk.next_rng_key(), 0.1, batch.shape))
-    intra_fape = jnp.where(same_chain[None], jnp.clip(fape, 0.0, jnp.where(intra_coin, jnp.inf, 10.0)), 0).sum(axis=(-1, -2))
-    intra_fape /= jnp.maximum((pair_mask * same_chain)[None].sum(axis=(-1, -2)), 1e-6)
-    intra_fape /= 10.0
-    inter_fape = jnp.where(other_chain[None], jnp.clip(fape, 0.0, jnp.where(inter_coin, jnp.inf, 30.0)), 0).sum(axis=(-1, -2))
-    inter_fape /= jnp.maximum((pair_mask * other_chain)[None].sum(axis=(-1, -2)), 1e-6)
-    inter_fape /= 30.0
-    fape = intra_fape + inter_fape
-    return fape, rotamer_loss, final_ae, rotamer_error
 
 def all_atom_fape(prediction: Vec3Array, ground_truth: Vec3Array, aa_type: jnp.ndarray,
                   batch: jnp.ndarray, chain: jnp.ndarray, all_atom_mask: jnp.ndarray,

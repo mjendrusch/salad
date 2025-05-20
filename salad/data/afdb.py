@@ -1,3 +1,8 @@
+"""This module implements data loading for AlphaFoldDB structures.
+
+Not used in the manuscript.
+"""
+
 import os
 import datetime
 from typing import Dict, List, Any
@@ -12,6 +17,7 @@ from torch.utils.data import Dataset, IterableDataset
 from salad.data.allpdb import AA_ORDER, slice_dict, pad_dict
 
 class AFDB:
+    """AlphaFold DB dataset class."""
     def __init__(self, path, stat_path, filter=None, min_plddt=0.0):
         if filter is None:
             filter = lambda x: True
@@ -58,6 +64,7 @@ class AFDB:
         return len(self.stats["name"])
 
 class AFDBStream(IterableDataset):
+    """Infinite stream of random AlphaFold DB structures."""
     def __init__(self, path, stat_path, filter=None,
                  length_weights=False, weight_max=1000,
                  weight_exp=1.0, min_plddt=0.0,
@@ -162,6 +169,7 @@ class AFDBStream(IterableDataset):
         return result, new_queue
 
 class CroppedAFDBStream(IterableDataset):
+    """Infinite stream of cropped AlphaFold DB structures."""
     def __init__(self, path, stat_path, filter=None,
                  length_weights=False, weight_max=1000,
                  weight_exp=1.0, min_plddt=0.0,

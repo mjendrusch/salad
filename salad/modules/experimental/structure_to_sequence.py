@@ -1,5 +1,6 @@
+r"""TODO"""
+
 from typing import Optional
-from functools import partial
 from copy import deepcopy
 
 import jax
@@ -8,43 +9,25 @@ import haiku as hk
 
 # alphafold dependencies
 from salad.aflib.model.geometry import Vec3Array
-from salad.aflib.model.all_atom_multimer import get_atom14_mask
 
 # basic module imports
 from salad.modules.basic import (
-    Linear, MLP, init_glorot, init_relu,
-    init_zeros, init_linear, block_stack
+    Linear, MLP, init_relu, init_zeros, init_linear, block_stack
 )
 from salad.modules.transformer import (
     resi_dual, prenorm_skip, resi_dual_input, prenorm_input, drop)
 
 # import geometry utils
 from salad.modules.utils.geometry import (
-    index_mean, index_sum, index_count, extract_aa_frames,
-    extract_neighbours, distance_rbf, hl_gaussian, distance_one_hot,
-    unique_chain, positions_to_ncacocb, axis_index,
-    single_protein_sidechains, compute_pseudo_cb,
-    get_random_neighbours, get_spatial_neighbours,
-    get_index_neighbours, get_neighbours, index_align)
+    index_mean, extract_aa_frames, distance_rbf,
+    unique_chain, positions_to_ncacocb,
+    compute_pseudo_cb, get_neighbours)
 
-from salad.modules.utils.dssp import assign_dssp, drop_dssp
-
-# TODO add pre Encoder and post Encoder augmentation to semi-equivariant mode
-from salad.modules.structure_autoencoder import (
-    structure_augmentation, structure_augmentation_params,
-    apply_structure_augmentation, apply_inverse_structure_augmentation,
-    semiequivariant_update_positions,
-    InnerDistogram, extract_dmap_neighbours)
-
-# import violation loss
-from salad.modules.utils.alphafold_loss import violation_loss
+from salad.modules.utils.dssp import assign_dssp
 
 # sparse geometric module imports
 from salad.modules.geometric import (
     SparseStructureAttention,
-    SemiEquivariantSparseStructureAttention,
-    VectorLinear,
-    vector_mean_norm,
     LinearToPoints,
     sequence_relative_position, distance_features,
     direction_features, type_position_features,

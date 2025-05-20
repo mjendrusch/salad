@@ -1,3 +1,5 @@
+"""This module contains basic neural network blocks."""
+
 from typing import Union, Optional
 
 import jax
@@ -104,28 +106,35 @@ class GatedMLP(hk.Module):
             out_size, bias=False, initializer=self.final_init)(hidden)
 
 def init_relu():
+    """Linear layer initialization for ReLU activations."""
     return hk.initializers.VarianceScaling(mode="fan_in", scale=2.0)
 
 def init_linear():
+    """Linear layer initialization."""
     return hk.initializers.VarianceScaling(mode="fan_in", scale=1.0)
 
 def init_zeros():
+    """Zero initialization."""
     return hk.initializers.Constant(0.0)
 
 def init_glorot():
-  return hk.initializers.VarianceScaling(
-    mode="fan_avg", scale=1.0, distribution="uniform")
+    """Glorot initialization."""
+    return hk.initializers.VarianceScaling(
+        mode="fan_avg", scale=1.0, distribution="uniform")
 
 def init_small(scale=1e-2):
-  return hk.initializers.RandomUniform(minval=-scale, maxval=scale)
+    """Small uniform initialization."""
+    return hk.initializers.RandomUniform(minval=-scale, maxval=scale)
 
 def small_linear(*args, scale=1e-4, **kwargs):
-  def inner(x):
-    return hk.LayerNorm([-1], False, False)(
-      Linear(*args, **kwargs, initializer=init_small(scale=scale))(x))
-  return inner
+    """Linear layer with small initialization."""
+    def inner(x):
+        return hk.LayerNorm([-1], False, False)(
+        Linear(*args, **kwargs, initializer=init_small(scale=scale))(x))
+    return inner
 
 def block_stack(depth, block_size=1, with_state=False):
+    """Layer stack with block-gradient checkpointing."""
     count = depth // block_size
     def inner(function):
         if block_size > 1:

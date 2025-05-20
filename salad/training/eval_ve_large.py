@@ -23,7 +23,7 @@ from salad.modules.noise_schedule_benchmark import (
 from salad.modules.config import noise_schedule_benchmark as config_choices
 from flexloop.utils import parse_options
 from salad.modules.utils.geometry import extract_aa_frames
-from salad.training.eval_s2s import decode_sequence
+from salad.data.allpdb import decode_sequence
 
 def model_step(config):
     module = StructureDiffusionInference

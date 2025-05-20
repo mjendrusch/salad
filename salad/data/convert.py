@@ -1,7 +1,16 @@
+"""This module implements mmcif-to-npz conversion subroutines
+used to prepare datasets for training.
+
+Datasets are prepared for faster loading by parsing their structures,
+converting them into a flat dictionary format and serializing to
+compressed npz archives. In this process, residue atoms are bundled
+into atom24 format (maximum 24 atoms).
+"""
+
 import numpy as np
 import gemmi
 
-# open chemical component dictionary
+# residue name constants
 DNA_BASES = ["DG", "DA", "DT", "DC"]
 RNA_BASES = ["G", "A", "U", "C", "I"]
 AMINO_ACIDS = ["ALA", "ARG", "ASN", "ASP", "CYS",
@@ -14,13 +23,23 @@ BOND_TYPES = ["None", "Single", "Double", "Triple", "Aromatic"]
 AA_DICT = {}
 
 def read_components(path):
+    """Read a chemical component dictionary in CIF format."""
     return gemmi.cif.read(path)
 
 def get_residue_info(chemcomp, name, max_bonds=12):
+    """Get residue metadata from a chemical component dictionary.
+    
+    Args:
+        chemcomp: chemical component dictionary object.
+        name: residue name.
+        max_bonds: Maximum number of bonds per atom. Default: 12.
+    """
+    # extract residue information from the CCD
     block = chemcomp.find_block(name)
     if block is None:
         raise ValueError("Invalid residue...")
     residue = gemmi.make_chemcomp_from_block(block)
+    # attempt to extract reference structure from the CCD
     restruct = None
     for model in gemmi.make_structure_from_chemcomp_block(block):
         restruct = model.find_chain("")[0]
@@ -32,6 +51,7 @@ def get_residue_info(chemcomp, name, max_bonds=12):
              for atom in restruct
              if not atom.is_hydrogen()
             ])
+    # parse atom order, atom type and bond information from CCD
     atom_order = []
     atom_types = []
     atom_is_hydrogen = set()
@@ -78,47 +98,65 @@ def get_residue_info(chemcomp, name, max_bonds=12):
 
 
 def parse_structure(components, path, max_chains=50, get_bfactor=False):
+    """Parse a protein structure in mmCIF format.
+    
+    Args:
+        components: chemical component dictionary.
+        path: path to a mmCIF or PDB format file.
+    """
+    # read in the structure
     structure = gemmi.read_structure(path)
+    # initialize all arrays to parse
     uresi = 0
     ustsi = 0
-    bond_index = []
-    bond_type = []
-    has_bond = []
-    res_lengths = []
-    res_names = []
-    entity_index = []
-    chain_index = []
-    molecule_index = []
-    residue_index = []
-    unique_standard_index = []
-    residue_type = []
-    atom_names = []
-    atom_types = []
-    atom_bfactor = []
-    atom_order_index = []
-    positions = []
-    atom_mask = []
+    bond_index = [] # per-residue unique bond identifier
+    bond_type = [] # unique bond type (single, double, aromatic)
+    has_bond = [] # boolean flat if a bond is present
+    res_lengths = [] # number of atoms in the residue
+    res_names = [] # name of the residue
+    entity_index = [] # entity index of the residue
+    chain_index = [] # chain index of the residue
+    molecule_index = [] # unique index for covalently bonded entities
+    residue_index = [] # residue index
+    unique_standard_index = [] 
+    residue_type = [] # residue type (AA, DNA, RNA, SMOL, METAL, HOH)
+    atom_names = [] # atom name
+    atom_types = [] # atom type (H, He, Li, ...)
+    atom_bfactor = [] # bfactor
+    atom_order_index = [] # atom index in the residue's atom order
+    positions = [] # atom coordinates
+    atom_mask = [] # atom mask (False if atom not present)
     mol_id_list = []
     residues = dict()
     hoh_count = 0
     for model in structure:
+        # iterate over chains in the structure
         for idx, chain in enumerate(model):
+            # skip chain if it is a symmetry copy
+            # and there are too many chains present.
+            # Otherwise we get ridiculously long wait times
+            # and large files for any capsids in PDB.
             if len(model) > max_chains and "-" in chain.name:
                 continue
+            # iterate over subchains
             for subchain in chain.subchains():
                 for res in subchain:
+                    # attempt to get residue information
                     try:
                         res_info = get_residue_info(components, res.name)
                     except ValueError as e:
                         print(f"INVALID RESIDUE {res.name}")
                         continue
+                    # cache residue information
                     if res.name not in residues:
                         residues[res.name] = res_info
+                    # get residue index
                     resi = res.label_seq
                     if resi is None:
                         resi = res.seqid.num
                         if resi is None:
                             resi = -1
+                    # get residue type
                     if res.name == "HOH":
                         mol_id = f"HOH-{hoh_count}"
                         hoh_count += 1
@@ -133,12 +171,14 @@ def parse_structure(components, path, max_chains=50, get_bfactor=False):
                         restype = "METAL"
                     else:
                         restype = "SMOL"
+                    # get molecule index
                     raw_mol_id = subchain.subchain_id()
                     if raw_mol_id in mol_id_list:
                         mol_id = mol_id_list.index(raw_mol_id)
                     else:
                         mol_id = len(mol_id_list)
                         mol_id_list.append(raw_mol_id)
+                    # get atom information (atom type, position, bfactor)
                     atom_order = res_info["atom_order"]
                     local_atom_mask = []
                     res_atoms = {}
@@ -151,6 +191,7 @@ def parse_structure(components, path, max_chains=50, get_bfactor=False):
                             res_atoms[atom_name]["position"] = np.array((atom.pos.x, atom.pos.y, atom.pos.z))
                             if get_bfactor:
                                 res_atoms[atom_name]["bfactor"] = atom.b_iso
+                    # get atom order and bond information
                     for aoi, atom_name in enumerate(atom_order):
                         if atom_name in res_atoms:
                             atom_names.append(atom_name)
@@ -198,6 +239,7 @@ def parse_structure(components, path, max_chains=50, get_bfactor=False):
                     uresi += 1
                     if restype != "SMOL":
                         ustsi += 1
+    # convert everything to numpy arrays
     atom_names = np.array(atom_names)
     atom_types = np.array(atom_types)
     atom_mask = np.array(atom_mask, dtype=np.bool_)
@@ -221,6 +263,7 @@ def parse_structure(components, path, max_chains=50, get_bfactor=False):
     bond_index = np.stack(bond_index, axis=0)
     bond_type = np.stack(bond_type, axis=0)
     has_bond = np.stack(has_bond, axis=0)
+    # combine into dictionary
     parse_result = dict(
         atom_name=atom_names,
         atom_type=atom_types,
@@ -241,9 +284,11 @@ def parse_structure(components, path, max_chains=50, get_bfactor=False):
     )
     if get_bfactor:
         parse_result["bfactor"] = atom_bfactor
+    # convert to atom24 format
     return to_atomX(parse_result, 24)
 
 def to_atomX(target, max_count=50):
+    """Bundles residue atoms with up to max_count atoms per residue."""
     residue_indices, length = np.unique(target["unique_standard_index"], return_counts=True)
     residue_count = residue_indices.shape[0]
     in_mask = np.arange(max_count)[None, :] < length[:, None] 

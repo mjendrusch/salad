@@ -1,3 +1,5 @@
+"""This module implements some basic transformer components."""
+
 from typing import Optional
 
 import jax
@@ -7,11 +9,13 @@ import haiku as hk
 from salad.modules.basic import MLP, init_relu
 
 def resi_dual(local, incremental, output):
+    """ResiDual update (mixed pre-norm and post-norm)."""
     local = hk.LayerNorm([-1], True, True)(local + output)
     incremental = incremental + output
     return local, incremental
 
 def resi_dual_input(features):
+    """Extract the input part from a set of ResiDual features."""
     return features[0]
 
 def prenorm_skip(local, output):
@@ -24,7 +28,7 @@ def prenorm_input(local):
     return hk.LayerNorm([-1], True, True)(local)
 
 def drop(data, p=0.1, is_training=True):
-    # FIXME: this should 100% be "if is_training"!
+    """Dropout"""
     if is_training:
         mask = jax.random.bernoulli(
             hk.next_rng_key(), p, data.shape)
@@ -32,6 +36,7 @@ def drop(data, p=0.1, is_training=True):
     return data
 
 class Transition(hk.Module):
+    """A simple MLP feed forward block."""
     def __init__(self, factor=4, depth=2,
                  activation=jax.nn.relu,
                  final_init="zeros",
