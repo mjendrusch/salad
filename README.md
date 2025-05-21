@@ -5,6 +5,12 @@
 
 *Proteins designed to spell out "salad" – the name of this software – overlaid with their ESMfold predicted structures, listing the root mean square deviation between design and prediction (scRMSD).*
 
+## Colab quickstart
+If you just want to generate a couple of proteins, without installing salad, you can use these Colab notebooks:
+
+- [SALAD_example](https://colab.research.google.com/github/mjendrusch/salad/blob/master/notebooks/SALAD_example.ipynb)
+  - **experimental:** currently this notebook only does unconditional generation. More advanced use cases are coming soon.
+
 ## NOTICE: jax compatibility issue
 jax versions 0.5.1 to 0.5.3 seem to cause issues for symmetric protein generation using salad.
 salad works as expected for versions 0.5.0 and 0.6.0.
@@ -75,6 +81,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 
 # Table of contents
 - [salad - sparse all-atom denoising](#salad---sparse-all-atom-denoising)
+  - [Colab quickstart](#colab-quickstart)
   - [NOTICE: jax compatibility issue](#notice-jax-compatibility-issue)
   - [What's salad?](#whats-salad)
   - [What's in this repository?](#whats-in-this-repository)
@@ -135,6 +142,8 @@ While the models and code provided here are functional and reflect the state of 
 
 ## quality of life improvements
 - [ ] provide Colab notebooks
+  - minimal salad Colab notebook: [SALAD_example.ipynb](notebooks/SALAD_example.ipynb)
+  - more will come once I figure out the API
 - [ ] provide docker / apptainer containers
 - [ ] provide scripts to run the entire `salad` pipeline in one go
 - [ ] implement an improved CLI

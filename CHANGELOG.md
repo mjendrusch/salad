@@ -1,6 +1,8 @@
 # in progress
 - cleaned up files in `salad.modules`
 - added comments and rudimentary docstrings to the majority of the codebase
+- added work-in-progress `salad.inference` API
+- added minimal Colab notebook
 
 # v0.1.1
 - improved installation on ARM devices
