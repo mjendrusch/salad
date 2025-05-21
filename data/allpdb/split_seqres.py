@@ -1,3 +1,6 @@
+"""This script splits a PDB seqres file (list of sequences) into nucleic
+acid sequences and amino acid sequences."""
+
 import sys
 if __name__=="__main__":
     seqres = sys.argv[1]

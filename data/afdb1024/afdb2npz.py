@@ -1,3 +1,4 @@
+"""Conversion script used to convert the AlphaFold DB dataset."""
 
 if __name__ == "__main__":
     import os

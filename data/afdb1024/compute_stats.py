@@ -1,3 +1,12 @@
+"""Script to compute AlphaFold DB structure statistics.
+
+This script is designed to be run as multiple parallel processes.
+Specify a number of processes and the offset within that array of those processes
+for each instance.
+The script will split up the AlphaFold DB dataset and write one part file
+per process. Run merge_stats.py to merge the resulting files.
+"""
+
 import os
 import pydssp
 import sys
@@ -9,9 +18,13 @@ import tqdm
 from salad.aflib.common.protein import from_pdb_string
 from salad.aflib.common.residue_constants import atom_types
 
+# base directory of the dataset
 base = sys.argv[1]
+# name of the resulting statistics file
 out_path = sys.argv[2]
+# number of parallel processes
 count = int(sys.argv[3])
+# offset in the array of parallel processes
 offset = int(sys.argv[4])
 
 with gzip.open(f"{base}/2-repId_isDark_nMem_repLen_avgLen_repPlddt_avgPlddt_LCAtaxId.tsv.gz", "rt") as f:
@@ -21,6 +34,7 @@ afdb1024 = afdb_stats[afdb_stats["length"] <= 1024]
 with open(out_path + f".{offset}", "wt") as out_f:
     out_f.write("name,length,plddt,L,H,E,std_ca\n")
     tick = 0
+    # for each structure in the dataset, extract length, pLDDT and secondary structure
     for name, length, plddt in tqdm.tqdm(zip(
             afdb1024["name"][offset::count],
             afdb1024["length"][offset::count],

@@ -1,3 +1,5 @@
+"""Conversion script used to construct the AllPDB dataset."""
+
 import os
 import gzip
 import numpy as np

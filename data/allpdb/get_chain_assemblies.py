@@ -1,3 +1,9 @@
+"""This script builds a chain-assembly index for a PDB-like dataset.
+
+The resulting CSV file chain_assemblies.csv lists all available biological
+assemblies per chain in the dataset.
+"""
+
 import os
 import numpy as np
 from zipfile import BadZipFile
