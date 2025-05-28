@@ -1,3 +1,5 @@
+# Adapted from the AlphaFold2 codebase
+#
 # Copyright 2021 DeepMind Technologies Limited
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -97,7 +99,8 @@ class Protein:
 
 
 def _from_bio_structure(
-    structure: Structure, chain_id: Optional[str] = None
+    structure: Structure, chain_id: Optional[str] = None,
+    convert_chains: bool = True
 ) -> Protein:
   """Takes a Biopython structure and creates a `Protein` instance.
 
@@ -108,6 +111,7 @@ def _from_bio_structure(
     structure: Structure from the Biopython library.
     chain_id: If chain_id is specified (e.g. A), then only that chain is parsed.
       Otherwise all chains are parsed.
+    convert_chains: Convert chain ID to numerical index? Default: True.
 
   Returns:
     A new `Protein` created from the structure contents.
@@ -162,10 +166,15 @@ def _from_bio_structure(
       chain_ids.append(chain.id)
       b_factors.append(res_b_factors)
 
-  # Chain IDs are usually characters so map these to ints.
-  unique_chain_ids = np.unique(chain_ids)
-  chain_id_mapping = {cid: n for n, cid in enumerate(unique_chain_ids)}
-  chain_index = np.array([chain_id_mapping[cid] for cid in chain_ids])
+  if convert_chains:
+    # Chain IDs are usually characters so map these to ints.
+    unique_chain_ids = np.unique(chain_ids)
+    chain_id_mapping = {cid: n for n, cid in enumerate(unique_chain_ids)}
+    chain_index = np.array([chain_id_mapping[cid] for cid in chain_ids])
+  else:
+    # if convert_chains is False, retain chain ID characters
+    # in the numpy array
+    chain_index = np.array([cid for cid in chain_ids])
 
   return Protein(
       atom_positions=np.array(atom_positions),
@@ -176,7 +185,8 @@ def _from_bio_structure(
       b_factors=np.array(b_factors))
 
 
-def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
+def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None,
+                    convert_chains: bool = True) -> Protein:
   """Takes a PDB string and constructs a `Protein` object.
 
   WARNING: All non-standard residue types will be converted into UNK. All
@@ -193,7 +203,8 @@ def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
   with io.StringIO(pdb_str) as pdb_fh:
     parser = PDBParser(QUIET=True)
     structure = parser.get_structure(id='none', file=pdb_fh)
-    return _from_bio_structure(structure, chain_id)
+    return _from_bio_structure(
+      structure, chain_id, convert_chains=convert_chains)
 
 
 def from_mmcif_string(

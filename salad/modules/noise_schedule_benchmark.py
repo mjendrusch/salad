@@ -514,17 +514,20 @@ class StructureDiffusionInference(StructureDiffusion):
         dmap_mask = jnp.zeros_like(dmap, dtype=jnp.bool_)
         if "dmap_mask" in data:
             dmap = data["dmap"]
-            omap = data["omap"]
             dmap_mask = data["dmap_mask"]
+            if "omap" in data:
+                omap = data["omap"]
 
         # initialize residue pair flags
         # FIXME: currently we do not support block-contact conditioning
         # or hotspot conditioning.
         chain = data["chain_index"]
-        other_chain = chain[:, None] != chain[None, :]
+        chain_contacts = chain[:, None] != chain[None, :]
+        if "chain_contacts" in data:
+            chain_contacts = data["chain_contacts"]
         flags = jnp.concatenate(
             (
-                other_chain[..., None],
+                chain_contacts[..., None],
                 jnp.zeros((chain.shape[0], chain.shape[0], 2)),
             ),
             axis=-1,

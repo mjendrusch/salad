@@ -66,6 +66,7 @@ def sample(step, params, key, data, prev,
         data["aatype"] = update["aatype"]
         if idx in out_steps:
             data["result"] = update
+            data["aa_logits"] = update["aa"]
             results.append({key: value for key, value in data.items()})
         if idx == out_steps[-1]:
             break

@@ -31,24 +31,28 @@ class Screw:
         result = jnp.concatenate(replicates, axis=0)
         return result - result[:, 1].mean(axis=0)
 
-    def couple_pos(self, x: jnp.ndarray, do_radius: bool):
+    def couple_pos(self, x: jnp.ndarray, do_radius: bool, center=None):
         # couple positions
         size = x.shape[0] // self.count
         representative = 0
         for idx in range(self.count):
             representative += jnp.einsum(
                 "...c,cd->...d",
-                cyclic_centering(x[idx * size:(idx + 1) * size], docenter=do_radius),
+                cyclic_centering(
+                    x[idx * size:(idx + 1) * size],
+                    docenter=do_radius, center=center),
                 self.rot_x[idx].T)
         representative /= self.count
         return representative
 
-    def select_pos(self, x: jnp.ndarray, do_radius: bool):
+    def select_pos(self, x: jnp.ndarray, do_radius: bool, center=None):
         size = x.shape[0] // self.count
         idx = self.count // 2
         representative = jnp.einsum(
             "...c,cd->...d",
-            cyclic_centering(x[idx * size:(idx + 1) * size], docenter=do_radius),
+            cyclic_centering(
+                x[idx * size:(idx + 1) * size],
+                docenter=do_radius, center=center),
             self.rot_x[idx].T)
         return representative
 
@@ -69,8 +73,10 @@ class Screw:
         unit = data[idx * subsize:(idx + 1) * subsize]
         return unit
 
-def cyclic_centering(x, docenter=True):
-    return jnp.where(docenter, x.at[:].add(-x[:, 1].mean(axis=0)), x)
+def cyclic_centering(x, docenter=True, center=None):
+    if center is None:
+        center = x[:, 1].mean(axis=0)
+    return jnp.where(docenter, x.at[:].add(-center), x)
 
 def rot_x(angle):
     return jnp.array([

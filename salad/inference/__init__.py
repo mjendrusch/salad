@@ -5,3 +5,5 @@ from salad.inference.utils import *
 import salad.inference.data as data
 import salad.inference.shape as shape
 import salad.inference.symmetry as symmetry
+import salad.inference.motif as motif
+import salad.inference.contacts as contacts
