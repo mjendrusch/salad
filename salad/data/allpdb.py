@@ -475,6 +475,12 @@ def np_compute_pseudo_beta(x):
     const = [-0.58273431, 0.56802827, -0.54067466]
     return const[0] * a + const[1] * b + const[2] * c + ca
 
+def np_to_ncacocb(x):
+    """Numpy implementation of all-atom to backbone+CB."""
+    ncaco = x[:, :4]
+    cb = np_compute_pseudo_beta(ncaco)[:, None]
+    return np.concatenate((ncaco, cb), axis=1)
+
 class ProteinBinderPDB(ProteinPDB):
     """Protein PDB dataset for binder design.
     
