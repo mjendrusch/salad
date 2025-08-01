@@ -4,7 +4,8 @@ import pickle
 import salad.modules.config.noise_schedule_benchmark as config_choices
 
 from salad.modules.noise_schedule_benchmark import (
-    StructureDiffusionNoise, StructureDiffusionPredict)
+    StructureDiffusionNoise, StructureDiffusionPredict,
+    StructureDiffusionEncode)
 
 def make_salad_model(config, param_path):
     """Get config dictionary and parameters for a salad model.

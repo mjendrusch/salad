@@ -12,11 +12,16 @@ from salad.aflib.model.all_atom_multimer import atom14_to_atom37, get_atom37_mas
 def from_config(config, num_aa=None,
                 residue_index=None,
                 chain_index=None,
+                batch_index=None,
+                init_pos=None,
+                init_aa_gt=None,
                 cyclic_mask=None,
                 padded_to=None):
     c = config
     if cyclic_mask is not None:
         c.cyclic = True
+    if init_pos is not None:
+        num_aa = init_pos.shape[0]
     if num_aa is not None:
         if chain_index is None:
             chain_index = jnp.zeros((num_aa,), dtype=jnp.int32)
@@ -27,8 +32,12 @@ def from_config(config, num_aa=None,
             num_aa = chain_index.shape[0]
         if residue_index is not None:
             num_aa = residue_index.shape[0]
-    init_pos = jnp.zeros((num_aa, 5 + c.augment_size, 3), dtype=jnp.float32)
-    init_aa_gt = jnp.full((num_aa,), 20, dtype=jnp.int32)
+    if batch_index is None:
+        batch_index = jnp.zeros_like(chain_index)
+    if init_pos is None:
+        init_pos = jnp.zeros((num_aa, 5 + c.augment_size, 3), dtype=jnp.float32)
+    if init_aa_gt is None:
+        init_aa_gt = jnp.full((num_aa,), 20, dtype=jnp.int32)
     init_local = jnp.zeros((num_aa, c.local_size), dtype=jnp.float32)
     data = dict(
         pos=init_pos,
@@ -36,14 +45,14 @@ def from_config(config, num_aa=None,
         seq=init_aa_gt,
         residue_index=residue_index,
         chain_index=chain_index,
-        batch_index=jnp.zeros_like(chain_index),
+        batch_index=batch_index,
         mask=jnp.ones_like(chain_index, dtype=jnp.bool_),
         cyclic_mask=cyclic_mask,
         t_pos=jnp.ones((num_aa,), dtype=jnp.float32),
         t_seq=jnp.ones((num_aa,), dtype=jnp.float32)
     )
     prev = dict(
-        pos=jnp.zeros_like(init_pos),
+        pos=jnp.zeros((num_aa, 5 + c.augment_size, 3), dtype=jnp.float32),
         local=init_local
     )
     if padded_to is not None:
