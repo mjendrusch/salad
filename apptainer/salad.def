@@ -1,0 +1,22 @@
+Bootstrap: docker
+From: mambaorg/micromamba:2-cuda12.5.1-ubuntu22.04
+
+%setup
+    mkdir -p ${APPTAINER_ROOTFS}/salad/params
+    cp -r ./salad/ ${APPTAINER_ROOTFS}/salad/
+    cp ./pyproject.toml ${APPTAINER_ROOTFS}/salad/
+    cp ./setup.py ${APPTAINER_ROOTFS}/salad/
+    cp ./README.md ${APPTAINER_ROOTFS}/salad/
+
+%post -c /bin/bash
+    micromamba install -q -y -n base python=3.10 pip=22 git
+    micromamba clean --all --yes
+    source /usr/local/bin/_activate_current_env.sh
+    micromamba activate base
+    pip install -e ${APPTAINER_ROOTFS}/salad/
+
+%runscript
+    #!/bin/bash
+    source /usr/local/bin/_activate_current_env.sh
+    micromamba activate base
+    python3.10 $@
