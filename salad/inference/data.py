@@ -16,8 +16,11 @@ def from_config(config, num_aa=None,
                 init_pos=None,
                 init_aa_gt=None,
                 cyclic_mask=None,
-                padded_to=None):
+                padded_to=None,
+                atom_count=None):
     c = config
+    if atom_count is None:
+        atom_count = 5 + c.augment_size
     if cyclic_mask is not None:
         c.cyclic = True
     if init_pos is not None:
@@ -35,7 +38,7 @@ def from_config(config, num_aa=None,
     if batch_index is None:
         batch_index = jnp.zeros_like(chain_index)
     if init_pos is None:
-        init_pos = jnp.zeros((num_aa, 5 + c.augment_size, 3), dtype=jnp.float32)
+        init_pos = jnp.zeros((num_aa, atom_count, 3), dtype=jnp.float32)
     if init_aa_gt is None:
         init_aa_gt = jnp.full((num_aa,), 20, dtype=jnp.int32)
     init_local = jnp.zeros((num_aa, c.local_size), dtype=jnp.float32)
@@ -52,7 +55,7 @@ def from_config(config, num_aa=None,
         t_seq=jnp.ones((num_aa,), dtype=jnp.float32)
     )
     prev = dict(
-        pos=jnp.zeros((num_aa, 5 + c.augment_size, 3), dtype=jnp.float32),
+        pos=jnp.zeros((num_aa, atom_count, 3), dtype=jnp.float32),
         local=init_local
     )
     if padded_to is not None:
@@ -145,7 +148,7 @@ def update(data, **kwargs):
 
 def to_protein(data):
     atom37 = atom14_to_atom37(data["atom_pos"], data["aatype"])
-    atom37_mask = get_atom37_mask(data["aatype"])
+    atom37_mask = data["mask"][:, None] * get_atom37_mask(data["aatype"])
     residue_index = np.array(data["residue_index"])
     if "aa_logits" in data:
         maxprob = jax.nn.softmax(data["aa_logits"], axis=-1).max(axis=-1)

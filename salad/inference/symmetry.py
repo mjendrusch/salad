@@ -4,7 +4,8 @@ import jax
 import jax.numpy as jnp
 
 class Screw:
-    def __init__(self, count=3, angle=0, radius=15.0, translation=0.0, chain_center=False):
+    def __init__(self, count=3, angle=0, radius=15.0, translation=0.0, chain_center=False,
+                 symmetry_axis=0, radius_axis=1):
         angle = angle / 180 * np.pi
         self.count = count
         self.angle = angle
@@ -12,21 +13,20 @@ class Screw:
         self.translation = translation
         self.chain_center = chain_center
         # prepare rotation matrices
-        self.rot = jnp.array([
-            [np.cos(angle),  0.0000000, -np.sin(angle)],
-            [    0.0000000,  1.0000000,      0.0000000],
-            [np.sin(angle),  0.0000000,  np.cos(angle)]])
-        self.rot_x = [jnp.eye(3), self.rot]
+        self.rot = ROT_AX[symmetry_axis](angle)
+        self.symmetry_axis = symmetry_axis
+        self.radius_axis = radius_axis
+        self.rot_n = [jnp.eye(3), self.rot]
         for _ in range(count - 2):
-            self.rot_x.append(jnp.einsum("ac,cb->ab", self.rot_x[-1], self.rot))
+            self.rot_n.append(jnp.einsum("ac,cb->ab", self.rot_n[-1], self.rot))
 
     def replicate_pos(self, first: jnp.ndarray, do_radius: bool):
         # replicate positions
-        first = first.at[:].add(jnp.array([do_radius * self.radius, 0.0, 0.0]))
+        first = first.at[:].add(do_radius * self.radius * jnp.array(AX[self.radius_axis]))
         replicates = []
         for idx in range(self.count):
             replicates.append(
-                jnp.einsum("...c,cd->...d", first, self.rot_x[idx])
+                jnp.einsum("...c,cd->...d", first, self.rot_n[idx])
             + idx * jnp.array([0.0, self.translation, 0.0]))
         result = jnp.concatenate(replicates, axis=0)
         return result - result[:, 1].mean(axis=0)
@@ -41,7 +41,7 @@ class Screw:
                 cyclic_centering(
                     x[idx * size:(idx + 1) * size],
                     docenter=do_radius, center=center),
-                self.rot_x[idx].T)
+                self.rot_n[idx].T)
         representative /= self.count
         return representative
 
@@ -53,7 +53,7 @@ class Screw:
             cyclic_centering(
                 x[idx * size:(idx + 1) * size],
                 docenter=do_radius, center=center),
-            self.rot_x[idx].T)
+            self.rot_n[idx].T)
         return representative
 
     def replicate_features(self, data: jnp.ndarray):
@@ -95,3 +95,6 @@ def rot_z(angle):
         [0.0000000,          0.0000000, 1.0000000]])
 def apply_rot(rot, x):
     return jnp.einsum("...c,cd->...d", x, rot)
+
+ROT_AX = (rot_x, rot_y, rot_z)
+AX = np.eye(3, dtype=np.float32)

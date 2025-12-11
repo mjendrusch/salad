@@ -285,7 +285,9 @@ def get_index_neighbours(count: int):
 
 def get_spatial_neighbours(count: int):
     """Extracts the `count` nearest neighbours based on euclidean distance."""
-    def inner(pos: Vec3Array, item, mask, neighbours=None):
+    def inner(pos: Vec3Array | jax.Array, item, mask, neighbours=None):
+        if not isinstance(pos, Vec3Array):
+            pos = Vec3Array.from_array(pos)
         distance = (pos[:, None] - pos[None, :]).norm()
         same_item = item[:, None] == item[None, :]
         distance = jnp.where(same_item, distance, jnp.inf)
@@ -347,7 +349,38 @@ def get_contact_neighbours(count):
         return get_neighbours(count)(distance, mask, neighbours)
     return inner
 
-def distance_rbf(distance, min_distance=0.0, max_distance=22.0, bins=64):
+def freq_embedding(t, size=128, min_freq=0.01, max_freq=2**8):
+    """Non-equivariant frequency positional embedding."""
+    N_freqs = size // 2
+    freqs = 2.0 ** jnp.linspace(jnp.log2(min_freq), jnp.log2(max_freq), N_freqs)
+    result = t[..., None] * freqs
+    return jnp.stack((jnp.sin(result), jnp.cos(result)), axis=-1).reshape(t.shape[0], -1)
+
+def gaussian_rbf(x, centers, step):
+    return jnp.exp(-(x[..., None] - centers) ** 2 / step ** 2)
+
+def linear_centers(min_val=0.0, max_val=22.0, bins=64):
+    centers = jnp.linspace(min_val, max_val, bins)
+    step = abs(centers[1:] - centers[:-1])
+    step = jnp.concatenate((step[:1], step), axis=0)
+    return centers, step
+
+def log_centers(min_val=0.0, max_val=200.0, bins=64, eps=1e-3):
+    centers = jnp.exp(jnp.linspace(jnp.log(min_val + eps), jnp.log(max_val + eps), bins))
+    step = abs(centers[1:] - centers[:-1])
+    step = jnp.concatenate((step[:1], step), axis=0)
+    return centers, step
+
+def linlog_centers(min_val=0.0, mid_val=20.0, max_val=400.0, bins=64, eps=1e-3):
+    centers = jnp.concatenate((
+        jnp.linspace(min_val, mid_val, bins // 2),
+        jnp.exp(jnp.linspace(jnp.log(mid_val + eps), jnp.log(max_val + eps), bins // 2 + 1)[1:])
+    ), axis=0)
+    step = abs(centers[1:] - centers[:-1])
+    step = jnp.concatenate((step[:1], step), axis=0)
+    return centers, step
+
+def distance_rbf(distance, min_distance=0.0, max_distance=22.0, bins=64, centers=None):
     """Computes Gaussian RBF features of continuous inputs.
     
     Args:
@@ -359,10 +392,14 @@ def distance_rbf(distance, min_distance=0.0, max_distance=22.0, bins=64):
     Returns:
         Gaussian RBF embedding of `distance` with `bins` centers.
     """
-    step = (max_distance - min_distance) / bins
-    centers = min_distance + jnp.arange(bins) * step + step / 2
-    rbf = jnp.exp(-(distance[..., None] - centers) ** 2 / step ** 2)
-    return rbf
+    if centers is None:
+        step = (max_distance - min_distance) / bins
+        centers = min_distance + jnp.arange(bins) * step + step / 2
+    else:
+        # compute per-bin step, if centers are provided
+        step = abs(centers[1:] - centers[:-1])
+        step = jnp.concatenate((step[:1], step), axis=0)
+    return gaussian_rbf(distance, centers, step)
 
 def distance_one_hot(distance, min_distance=0.0, max_distance=22.0, bins=64):
     """Computes one-hot encoding of continuous inputs.
@@ -414,6 +451,22 @@ def hl_gaussian(data, minimum=0.0, maximum=22.0, bins=64, sigma_ratio=1.0):
     value = erf_aux(upper, data[..., None]) - erf_aux(lower, data[..., None])
     value /= erf_aux(maximum, data[..., None]) - erf_aux(minimum, data[..., None])
     return value
+
+def spherical_harmonics(x, l_max=10):
+    normed = x / jnp.maximum(jnp.linalg.norm(x, axis=-1)[..., None], 1e-6)
+    colatitude_ = jnp.pi / 2 + jnp.arctan2(normed[..., 2], jnp.linalg.norm(normed[..., :2], axis=-1))
+    longitude_ = jnp.pi + jnp.arctan2(normed[..., 1], normed[..., 0])
+    upper_index = jnp.triu_indices(l_max + 1)
+    colat = jax.scipy.special.lpmn_values(l_max, l_max, jnp.cos(colatitude_).reshape(-1), is_normalized=True)
+    m = jnp.repeat(jnp.arange(l_max + 1)[:, None], l_max + 1, axis=1)
+    m = jnp.triu(m)
+    cos_val = colat * jnp.cos(m[:, :, None] * longitude_.reshape(-1)[None, None, :])
+    sin_val = colat * jnp.sin(m[:, :, None] * longitude_.reshape(-1)[None, None, :])
+    val = cos_val
+    val = val[upper_index]
+    val = jnp.moveaxis(val, 0, -1)
+    val = val.reshape(*x.shape[:-1], -1)
+    return val
 
 def compute_pseudo_cb(positions):
     """Compute idealized CB atom positions.
@@ -586,14 +639,16 @@ def index_kabsch(x, y, index, mask, weight=None):
         Alignment parameters (rotation, center of x, center of y) for atom position
         arrays x and y. Parts of x and y with different index are aligned separately.
     """
+    if weight is not None:
+        weight = weight[:, None]
     x_center = index_mean(x, index, mask[:, None], weight=weight)
     y_center = index_mean(y, index, mask[:, None], weight=weight)
     x -= x_center
     y -= y_center
     if weight is None:
-        weight = jnp.ones_like(index, dtype=jnp.float32)
+        weight = jnp.ones_like(index, dtype=jnp.float32)[:, None]
     covariance = index_sum(
-        weight[:, None, None] * x[:, :, None] * y[:, None, :],
+        weight[:, :, None] * x[:, :, None] * y[:, None, :],
         index, mask[:, None, None])
     u, _, v = jnp.linalg.svd(
         jax.lax.stop_gradient(covariance), compute_uv=True, full_matrices=True)
@@ -638,14 +693,16 @@ def apply_alignment(x, kabsch_data):
         x transformed according to kabsch_data.
     """
     rot, x_center, y_center = kabsch_data
-    delta = jnp.einsum(
-         "...ak,...k->...a", jnp.swapaxes(rot, -1, -2), y_center) - x_center
+    # delta = jnp.einsum(
+    #      "...ak,...k->...a", jnp.swapaxes(rot, -1, -2), y_center) - x_center
     return_vec3 = False
     if isinstance(x, Vec3Array):
         x = x.to_array()
         return_vec3 = True
     result = jnp.einsum(
-        "...ak,...ik->...ia", rot, x + delta[:, None])
+        "...ak,...ik->...ia", rot, (x - x_center[:, None])) + y_center[:, None]
+    # result = jnp.einsum(
+    #     "...ak,...ik->...ia", rot, x + delta[:, None])
     if return_vec3:
         result = Vec3Array.from_array(result)
     return result
