@@ -165,7 +165,6 @@ While the models and code provided here are functional and reflect the state of 
 
 # Getting started
 ## Installing salad
-*Note: salad installation is currently broken, for now refer to https://github.com/mjendrusch/salad/issues/4 for a workaround.*
 
 You can install `salad` the following way:
 1. Clone this git repository: `git clone https://github.com/mjendrusch/salad.git`
