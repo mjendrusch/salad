@@ -155,7 +155,7 @@ def random_dssp_mean(max_loop=0.5):
     loop = np.random.random() * max_loop
     return np.array([loop, (1 - loop) * helix, (1 - loop) * sheet])
 
-def random_dssp(count, p=0.5, return_string=False):
+def random_dssp(count, p=0.5, p_keep_loop=0.5, return_string=False):
     """Sample a random secondary structure string of a fixed length.
 
     Args:
@@ -203,7 +203,7 @@ def random_dssp(count, p=0.5, return_string=False):
         loops[index] += 1
     helices = ["_" + "H" * (num - 2) + "_" if random.random() > p else "_" * num for num in helices]
     sheets = ["_" + "E" * (num - 2) + "_" if random.random() > p else "_" * num for num in sheets]
-    loops = ["L" * num if random.random() < p else "_" * num for num in loops]
+    loops = ["L" * num if random.random() < p_keep_loop else "_" * num for num in loops]
     structured = helices + sheets
     random.shuffle(structured)
     dssp_string = loops[0] + "".join([s + l for s, l in zip(structured, loops[1:])])
