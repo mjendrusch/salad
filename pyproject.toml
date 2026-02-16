@@ -27,11 +27,10 @@ dependencies = [
     "scipy",
     "tqdm",
     "pydssp",
-    "jax[cuda12]==0.6.0; 'arm' not in platform_machine and 'aarch' not in platform_machine",
-    "jax==0.6.0; 'arm' in platform_machine or 'aarch' in platform_machine",
+    "jax[cuda12]>=0.6.0,<=0.9.0; 'arm' not in platform_machine and 'aarch' not in platform_machine",
+    "jax>=0.6.0,<=0.9.0; 'arm' in platform_machine or 'aarch' in platform_machine",
     "dm-tree",
     "dm-haiku @ git+https://github.com/deepmind/dm-haiku@v0.0.14",
-    "numpy",
     "flexloop @ git+https://github.com/mjendrusch/flexloop.git",
     "gemmi"
 ]
