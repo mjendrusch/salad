@@ -11,6 +11,14 @@ If you just want to generate a couple of proteins, without installing salad, you
 - [SALAD_example](https://colab.research.google.com/github/mjendrusch/salad/blob/master/notebooks/SALAD_example.ipynb)
   - **experimental:** currently this notebook only does unconditional generation. More advanced use cases are coming soon.
 
+## Ready-to-use pipelines
+salad-powered pipelines including sequence design and structure prediction for unconditional design, motif scaffolding and binder design
+are made available as part of [`flexcraft`](https://github.com/mjendrusch/flexcraft).
+To run unconditional design with random secondary structure conditioning, follow the instructions to install `flexcraft` and run:
+```bash
+python -m flexcraft.pipelines.denovo --num_aa "100" --num_designs 10 --out_path test_runs/denovo-100-1/
+```
+
 ## NOTICE: jax compatibility issue
 jax versions 0.5.1 to 0.5.3 seem to cause issues for symmetric protein generation using salad.
 salad works as expected for versions 0.5.0 and 0.6.0.
@@ -82,6 +90,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 # Table of contents
 - [salad - sparse all-atom denoising](#salad---sparse-all-atom-denoising)
   - [Colab quickstart](#colab-quickstart)
+  - [Ready-to-use pipelines](#ready-to-use-pipelines)
   - [NOTICE: jax compatibility issue](#notice-jax-compatibility-issue)
   - [What's salad?](#whats-salad)
   - [What's in this repository?](#whats-in-this-repository)
