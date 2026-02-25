@@ -3,6 +3,8 @@
 All models in the manuscript were trained with the BatchedProteinPDBStream dataset.
 """
 
+# TODO: make this more functional / pluggable
+
 import os
 import datetime
 from typing import Dict
@@ -11,7 +13,7 @@ import random
 import numpy as np
 from numpy import ndarray
 
-from torch.utils.data import Dataset, IterableDataset
+from torch.utils.data import Dataset, IterableDataset, get_worker_info
 from salad.data.periodic_table import periodic_table, pt_at, ATOM_TYPE_ORDER, index_atoms, apply_pt
 
 def decode_sequence(x: np.ndarray) -> str:
@@ -396,7 +398,9 @@ class ProteinSMOLNeighboursPDB(AllPDB):
                  seqres_na="clusterSeqresNA",
                  assembly=True,
                  num_smol_neighbours=16,
-                 p_atomize=0.02) -> None:
+                 p_atomize=0.02,
+                 p_drop_atom=0.1,
+                 noise=0.3) -> None:
         super().__init__(
             path, start_date, cutoff_date,
             cutoff_resolution, ["AA", "DNA", "RNA", "SMOL", "METAL"],
@@ -405,13 +409,15 @@ class ProteinSMOLNeighboursPDB(AllPDB):
             assembly=assembly, split_types=True,
             npz_version="_v3")
         self.p_atomize = p_atomize
+        self.p_drop_atom = p_drop_atom
+        self.noise = noise
         self.num_smol_neighbours = num_smol_neighbours
         self.aa_order = np.array(
             ['ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN',
              'GLU', 'GLY', 'HIS', 'ILE', 'LEU', 'LYS',
              'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP',
              'TYR', 'VAL', 'UNK'])
-        self.atom_type_order = np.array(['C', 'N', 'O', 'S', 'P'])
+        self.atom_type_order = ATOM_TYPE_ORDER#np.array(['C', 'N', 'O', 'S', 'P'])
 
     def __getitem__(self, index) -> Dict[str, np.ndarray]:
         raw_data, chain = super().__getitem__("AA", index)
@@ -441,12 +447,14 @@ class ProteinSMOLNeighboursPDB(AllPDB):
         for smol in ["AASMOL", "DNA", "RNA", "SMOL", "METAL"]:
             na_data = raw_data[smol]
             atom_mask = na_data["atom_mask"]
+            # bad_residue = (na_data["residue_name"][:, None] == np.array(["NA", "CL", "K", "BR"])).any(axis=1)
+            # atom_mask = atom_mask * (1 - bad_residue)[:, None] > 0
             atom_positions = na_data["position"][atom_mask]
+            if self.noise:
+                atom_positions += self.noise * np.random.randn(*atom_positions.shape)
             atom_types = na_data["atom_type"][atom_mask]
-            assignment = atom_types[:, None] == self.atom_type_order
-            assignment = np.where(assignment.any(axis=-1), np.argmax(assignment, axis=-1), 6)
-            if smol == "METAL":
-                assignment = 5 * np.ones_like(assignment)
+            assignment = atom_types[:, None] == self.atom_type_order[None, :]
+            assignment = np.where(assignment.any(axis=-1), np.argmax(assignment, axis=-1), len(ATOM_TYPE_ORDER) + 1)
             smol_positions.append(atom_positions)
             smol_types.append(assignment)
         smol_positions = np.concatenate(smol_positions, axis=0)
@@ -820,6 +828,7 @@ class BatchedProteinPDBStream(IterableDataset):
                  min_size=32,
                  max_size=None,
                  legacy_repetitive_chains=True,
+                 split_across_workers=False,
                  base_dataset=ProteinPDB) -> None:
         super().__init__()
         self.protein_pdb = base_dataset(
@@ -832,14 +841,21 @@ class BatchedProteinPDBStream(IterableDataset):
         self.max_size = max_size or size
         self.p_complex = p_complex
         self.legacy_repetitive_chains = legacy_repetitive_chains
+        self.split_across_workers = split_across_workers
         self.current_index = []
 
     def get_next_pdb(self):
         data = None
         while data is None:
             if not self.current_index:
-                self.current_index = list(range(len(self.protein_pdb)))
-                random.shuffle(self.current_index)
+                if self.split_across_workers:
+                    worker_info = get_worker_info()
+                    worker_id = worker_info.id
+                    num_workers = worker_info.num_workers
+                    self.current_index = list(range(worker_id, len(self.protein_pdb), num_workers))
+                else:
+                    self.current_index = list(range(len(self.protein_pdb)))
+                    random.shuffle(self.current_index)
             index = self.current_index.pop()
             data = self.protein_pdb[index]
         return data, index
@@ -927,14 +943,15 @@ class BatchedProteinPDBStream(IterableDataset):
                 continue
             part["chain_index"] = numerical_chain_index(part["chain_index"])
             part_size = part["aa_gt"].shape[0]
+            # FIXME: move this into main dataset?
             if has_smol:
                 smol_positions = smol_data["smol_positions"]
                 smol_types = smol_data["smol_types"]
                 ca = part["all_atom_positions"][:, 1]
                 distance = np.linalg.norm(ca[:, None] - smol_positions[None, :], axis=-1)
-                neighbours = np.argsort(distance, axis=1)[:, :16]
-                if neighbours.shape[1] < 16:
-                    diff = 16 - neighbours.shape[1]
+                neighbours = np.argsort(distance, axis=1)[:, :self.protein_pdb.num_smol_neighbours]
+                if neighbours.shape[1] < self.protein_pdb.num_smol_neighbours:
+                    diff = self.protein_pdb.num_smol_neighbours - neighbours.shape[1]
                     neighbours = np.concatenate((
                         neighbours,
                         -np.ones((neighbours.shape[0], diff),
@@ -1261,6 +1278,12 @@ def pad_dict(data, target_size):
         result[name], mask = pad_item(data[name], target_size)
     result["mask"] = mask
     return result
+
+def concatenate_dict(data):
+    return {
+        name: np.concatenate([d[name] for d in data], axis=0)
+        for name in data[0]
+    }
 
 def parse_date(date):
     """Parse a PDB entry date."""
