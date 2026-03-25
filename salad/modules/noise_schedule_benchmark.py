@@ -449,6 +449,7 @@ class StructureDiffusionInference(StructureDiffusion):
         c = self.config
         diffusion = Diffusion(c)
 
+        # FIXME: should we produce unique chain index by default?
         # prepare condition / task information
         data.update(self.prepare_condition(data))
         # apply noise to data
@@ -494,8 +495,12 @@ class StructureDiffusionInference(StructureDiffusion):
         dssp_mean = jnp.zeros((aa.shape[0], 3), dtype=jnp.float32)
         dssp_mean_mask = jnp.zeros(aa.shape, dtype=jnp.bool_)
         if "dssp_mean" in data:
-            dssp_mean = jnp.stack([data["dssp_mean"]] * aa.shape[0], axis=0)
-            dssp_mean_mask = jnp.ones(aa.shape, dtype=jnp.bool_)
+            if len(data["dssp_mean"].shape) == 1:
+                dssp_mean = jnp.stack([data["dssp_mean"]] * aa.shape[0], axis=0)
+                dssp_mean_mask = jnp.ones(aa.shape, dtype=jnp.bool_)
+            else:
+                dssp_mean = data["dssp_mean"]
+                dssp_mean_mask = data["dssp_mean_mask"]
         # process everything into per-residue condition features
         condition, _, _ = cond(
             aa,
@@ -522,7 +527,11 @@ class StructureDiffusionInference(StructureDiffusion):
         # FIXME: currently we do not support block-contact conditioning
         # or hotspot conditioning.
         chain = data["chain_index"]
+        batch = data["batch_index"]
+        same_batch = batch[:, None] == batch[None, :]
         chain_contacts = chain[:, None] != chain[None, :]
+        # FIXME: do we need to constrain chain contacts to same batch explicitly?
+        chain_contacts *= same_batch
         if "chain_contacts" in data:
             chain_contacts = data["chain_contacts"]
         flags = jnp.concatenate(
@@ -968,7 +977,7 @@ def preconditioning_scale_factors(config, t, sigma_data):
             "out": sigma_data,
             "skip": 1.0,
             "refine": 1,
-            "loss": 1 / jnp.maximum(t, 0.01) ** 2,
+            "loss": 1 / jnp.maximum(t**2, 1e-6), # FIXME: loss reweighting
         }
     # VP, VP-scaled
     else:
@@ -2165,6 +2174,15 @@ class DiffusionBlock(hk.Module):
                  resi, chain, batch, mask,
                  cyclic_mask=None, sup_neighbours=None, init_pos=None):
         c = self.config
+        # TODO: for in-model symmetrization, replicate protein with all its neighbours
+        # according to the symmetry group. This only works with fully SE(3) equivariant models!
+        # there is no way to "rotate" local features otherwise!
+        if c.block_symmetry is not None:
+            pos, prev_pos, init_pos = c.block_symmetry.replicate_pos(pos, prev_pos, init_pos)
+            features, condition, time, resi, chain, batch, mask = c.block_symmetry.replicate_features(
+                features, condition, time, resi, chain, batch, mask)
+            pair_condition = c.block_symmetry.construct_pair_condition(
+                pair_condition, resi, chain, batch, mask)
         residual_update, residual_input, _ = get_residual_gadgets(features, c.resi_dual)
         # neighbours based on current position
         current_neighbours = extract_neighbours(
@@ -2218,6 +2236,10 @@ class DiffusionBlock(hk.Module):
         if c.equivariance == "semi_equivariant":
             position_update_function = semiequivariant_update_positions
         pos = position_update_function(pos, local_norm, scale=out_scale, symm=c.symm)
+        # TODO: for in-model symmetrization
+        if c.block_symmetry is not None:
+            pos = c.block_symmetry.select_pos(pos)
+            features = c.block_symmetry.select_features(features)
         return features, pos.astype(local_norm.dtype)
 
 
@@ -2715,7 +2737,7 @@ class EncoderUpdate(hk.Module):
         return result
 
 
-def update_positions(pos, local_norm, scale=10.0, symm=None):
+def update_positions(pos, local_norm, scale=10.0, symm=None, non_equivariant=False):
     """Update atom positions based on current positions and model features.
     
     Args:
@@ -2723,10 +2745,14 @@ def update_positions(pos, local_norm, scale=10.0, symm=None):
         local_norm: normalized model features.
         scale: scale of the position update. Default: 10.0 angstroms.
         symm: optional symmetrizer.
+        non_equivariant: apply non-SE(3) equivariant update instead. Default: False.
     Returns:
         Updated atom positions.
     """
-    frames, local_pos = extract_aa_frames(Vec3Array.from_array(pos))
+    if non_equivariant:
+        local_pos = Vec3Array.from_array(pos - pos[:, 1:2])
+    else:
+        frames, local_pos = extract_aa_frames(Vec3Array.from_array(pos))
     pos_update = scale * Linear(
         pos.shape[-2] * 3,
         initializer=init_zeros(),
@@ -2739,7 +2765,10 @@ def update_positions(pos, local_norm, scale=10.0, symm=None):
     local_pos += pos_update
 
     # project updated pos to global coordinates
-    pos = frames[..., None].apply_to_point(local_pos).to_array()
+    if non_equivariant:
+        pos = local_pos.to_array() + pos[:, 1:2]
+    else:
+        pos = frames[..., None].apply_to_point(local_pos).to_array()
     return pos
 
 
