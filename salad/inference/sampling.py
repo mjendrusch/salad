@@ -12,7 +12,8 @@ class Sampler:
     def __init__(self, step, num_steps=500, out_steps=400,
                  start_steps=0, prev_threshold=0.8,
                  timescale="cosine(t)",
-                 timescale_seq=None):
+                 timescale_seq=None,
+                 return_prev=False):
         self.step = jax.jit(step)
         self.num_steps = num_steps
         self.out_steps = out_steps
@@ -20,6 +21,7 @@ class Sampler:
         self.prev_threshold = prev_threshold
         self.timescale = Sampler._get_timescale(timescale)
         self.timescale_seq = Sampler._get_timescale(timescale_seq) if timescale_seq is not None else None
+        self.return_prev = return_prev
 
     @staticmethod
     def _get_timescale(timescale: str | Callable[[float], float]) -> Callable[[float], float]:
@@ -27,14 +29,18 @@ class Sampler:
             timescale = parse_timescale(timescale)
         return timescale
     
-    def __call__(self, params, key, data, prev):
+    def __call__(self, params, key, data, prev, start_steps=None):
+        if start_steps is None:
+            start_steps = self.start_steps
         return sample(
             self.step, params, key, data, prev,
+            start_steps=start_steps,
             num_steps=self.num_steps,
             out_steps=self.out_steps,
             prev_threshold=self.prev_threshold,
             timescale=self.timescale,
-            timescale_seq=self.timescale_seq)
+            timescale_seq=self.timescale_seq,
+            return_prev=self.return_prev)
 
     def generate(self, params, data, prev):
         while True:
@@ -44,10 +50,11 @@ class Sampler:
 def sample(step, params, key, data, prev,
            num_steps=500, out_steps=400, start_steps=0,
            prev_threshold=0.8, timescale="cosine(t)",
-           timescale_seq=None):
+           timescale_seq=None, return_prev=False):
     if isinstance(timescale, str):
         timescale = parse_timescale(timescale)
     return_list = True
+    prevs = []
     if not isinstance(out_steps, (list, tuple)):
         return_list = False
         out_steps = [out_steps]
@@ -78,8 +85,12 @@ def sample(step, params, key, data, prev,
             data["result"] = update
             data["aa_logits"] = update["aa"]
             results.append({key: value for key, value in data.items()})
+            if return_prev:
+                prevs.append({key: value for key, value in prev.items()})
         if idx == out_steps[-1]:
             break
     if return_list:
+        if return_prev:
+            return results, prevs
         return results
     return results[0]
