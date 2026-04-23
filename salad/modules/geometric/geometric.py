@@ -720,6 +720,7 @@ class SparseInvariantPointAttention(hk.Module):
     def __init__(self, size=32, heads=4,
                  query_points=8, value_points=8,
                  final_init="zeros", normalize=False,
+                 non_equivariant=False,
                  name: Optional[str]="ada_point_attention"):
         super().__init__(name=name)
         self.size = size
@@ -728,6 +729,7 @@ class SparseInvariantPointAttention(hk.Module):
         self.value_points = value_points
         self.final_init = final_init
         self.normalize = normalize
+        self.non_equivariant = non_equivariant
 
     def __call__(self, local, pair, frames, neighbours, mask):
         if self.normalize:
@@ -742,10 +744,14 @@ class SparseInvariantPointAttention(hk.Module):
         q, k, v = jnp.split(qkv, 3, axis=-1)
         q = hk.LayerNorm([-1], True, True)(q)
         k = hk.LayerNorm([-1], True, True)(k)
-        qkv_g = LinearToPoints(
-            self.heads * (2 * self.query_points + self.value_points),
-            name="qkv_global"
-        )(local, frames)
+        if self.non_equivariant:
+            qkv_g = Linear(self.heads * (2 * self.query_points + self.value_points) * 3, bias=False)(local)
+            qkv_g = qkv_g.reshape(local.shape[0], -1, 3) + frames.translation.to_array()[:, None]
+        else:
+            qkv_g = LinearToPoints(
+                self.heads * (2 * self.query_points + self.value_points),
+                name="qkv_global"
+            )(local, frames)
         qkv_g = qkv_g.reshape(*qkv_g.shape[:-2], self.heads, -1, 3)
         q_g, k_g, v_g = jnp.split(
             qkv_g,
@@ -783,7 +789,10 @@ class SparseInvariantPointAttention(hk.Module):
         out_scalar = jnp.einsum("ijh,ijhc->ihc", attn, v[neighbours])
         out_point = jnp.einsum("ijh,ijhpc->ihpc", attn, v_g[neighbours])
         out_point = Vec3Array.from_array(out_point.astype(jnp.float32))
-        out_point: Vec3Array = frames[:, None, None].apply_inverse_to_point(out_point)
+        if self.non_equivariant:
+            out_point: Vec3Array = out_point - frames.translation[:, None, None]
+        else:
+            out_point: Vec3Array = frames[:, None, None].apply_inverse_to_point(out_point)
         out_norm = out_point.norm()
         out_point = out_point.to_array()
         out = Linear(size=local.shape[-1], initializer=self.final_init, name="project_out")(

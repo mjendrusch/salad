@@ -117,6 +117,204 @@ default_ve_scaled.diffusion_kind = "edm"
 default_ve_scaled.pos_weight *= 100
 default_ve_scaled.trajectory_weight *= 100
 
+hybrid_ve = deepcopy(default_ve_scaled)
+hybrid_ve.regularization_weight = 0.01
+hybrid_ve.augment_size = 6
+hybrid_ve.sidechain_weight = 100.0
+hybrid_ve.diffusion_depth = 1
+hybrid_ve.aa_weight = 1.0
+hybrid_ve.update_mask = "ca"
+
+hybrid_ve_stopE = deepcopy(hybrid_ve)
+hybrid_ve_stopE.stop_encoder = True
+hybrid_ve_stopE.decoder_atom37 = True
+
+hybrid_ve_atom37 = deepcopy(hybrid_ve_stopE)
+hybrid_ve_atom37.encoder_atom37 = True
+hybrid_ve_atom37.decoder_atom37 = True
+
+hybrid_ve_enc37 = deepcopy(hybrid_ve_stopE)
+hybrid_ve_enc37.encoder_atom37 = True
+hybrid_ve_enc37.decoder_atom37 = False
+
+hybrid_ve_strongreg = deepcopy(hybrid_ve_enc37)
+hybrid_ve_strongreg.regularization_weight = 0.1
+
+hybrid_ve_norm = deepcopy(hybrid_ve_enc37)
+hybrid_ve_norm.normalize_encoder = "rmsd"
+hybrid_ve_norm.stop_encoder = False
+
+hybrid_ve_eachnorm = deepcopy(hybrid_ve_norm)
+hybrid_ve_eachnorm.normalize_encoder = "length"
+
+hybrid_ve_norm_full = deepcopy(hybrid_ve_norm)
+hybrid_ve_norm_full.diffusion_depth = 6
+
+hybrid_ve_norm_unclip = deepcopy(hybrid_ve_norm_full)
+hybrid_ve_norm_unclip.clipped_weight = 0.0
+hybrid_ve_norm_unclip.unclipped_weight = 1.0
+
+hybrid_ve_norm_fapeclip = deepcopy(hybrid_ve_norm_unclip)
+hybrid_ve_norm_fapeclip.fape_clipped = True
+
+hybrid_flow_norm_fapeclip = deepcopy(hybrid_ve_norm_fapeclip)
+hybrid_flow_norm_fapeclip.diffusion_kind = "flow"
+hybrid_flow_norm_fapeclip.preconditioning = "flow"
+hybrid_flow_norm_fapeclip.pos_weight = 2.0
+hybrid_flow_norm_fapeclip.trajectory_weight = 1.0
+
+hybrid_flow_norm_noweight = deepcopy(hybrid_flow_norm_fapeclip)
+hybrid_flow_norm_noweight.no_loss_weight = True
+hybrid_flow_norm_noweight.local_size = 512
+hybrid_flow_norm_noweight.pair_size = 128
+hybrid_flow_norm_noweight.decoder_depth = 4
+hybrid_flow_norm_noweight.no_decoder_stop = True
+
+hybrid_flow_bb = deepcopy(hybrid_flow_norm_noweight)
+hybrid_flow_bb.encoder_bb = True
+hybrid_flow_bb.encoder_atom37 = False
+hybrid_flow_bb.self_condition_decoder = True
+hybrid_flow_bb.self_condition_masked = True
+hybrid_flow_bb.learned_scale = True
+hybrid_flow_bb.local_size = 128
+hybrid_flow_bb.pair_size = 64
+# hybrid_flow_bb.decoder_bb = True # TODO: how to implement that?
+hybrid_flow_bb.clipped_weight = 1.0
+hybrid_flow_bb.unclipped_weight = 0.01
+
+hybrid_flow_bb_weight = deepcopy(hybrid_flow_bb)
+hybrid_flow_bb_weight.no_loss_weight = False
+
+hybrid_flow_bb_nano = deepcopy(hybrid_flow_bb_weight)
+hybrid_flow_bb_nano.depth = 2
+hybrid_flow_bb_nano.decoder_depth = 2
+hybrid_flow_bb_nano.sidechain_rigid_loss = True
+
+hybrid_flow_bb_full = deepcopy(hybrid_flow_bb_weight)
+hybrid_flow_bb_full.local_size = 512
+hybrid_flow_bb_full.pair_size = 128
+hybrid_flow_bb_full.sidechain_rigid_loss = True
+hybrid_flow_bb_full.denoised_rigid_loss = False
+hybrid_flow_bb_full.encoder_no_learned_scale = True
+hybrid_flow_bb_full.no_override = False
+hybrid_flow_bb_full.x_loss_t_weight = False
+
+hybrid_flow_staged = deepcopy(hybrid_flow_bb_full)
+hybrid_flow_staged.encoder_no_learned_scale = True
+hybrid_flow_staged.unclipped_weight = 0
+hybrid_flow_staged.embed_depth = 6
+hybrid_flow_staged.refine_depth = 6
+hybrid_flow_staged.no_override = True
+hybrid_flow_staged.use_dropout = False
+hybrid_flow_staged.staged_diffusion = True
+hybrid_flow_staged.sidechain_rigid_weight = 100.0
+hybrid_flow_staged.internal_recycle = False # TODO: implement this
+
+hybrid_flow_staged_unclip = deepcopy(hybrid_flow_staged)
+hybrid_flow_staged_unclip.fape_clipped = True
+hybrid_flow_staged_unclip.unclipped_weight = 1.0
+hybrid_flow_staged_unclip.clipped_weight = 0.0
+
+hybrid_flow_staged_unclip_reweight = deepcopy(hybrid_flow_staged_unclip)
+hybrid_flow_staged_unclip_reweight.uniform_weight = 0.5
+
+hybrid_ve_bb_full = deepcopy(hybrid_flow_bb_full)
+hybrid_ve_bb_full.denoised_rigid_loss = False
+hybrid_ve_bb_full.preconditioning = "edm_scaled"
+hybrid_ve_bb_full.diffusion_kind = "edm"
+hybrid_ve_bb_full.pos_weight *= 100
+hybrid_ve_bb_full.trajectory_weight *= 100
+
+hybrid_ve_bb_small = deepcopy(hybrid_ve_bb_full)
+hybrid_ve_bb_small.local_size = 128
+hybrid_ve_bb_small.pair_size = 64
+
+# TODO: hybrid ve atom14
+
+hybrid_flow_sc = deepcopy(hybrid_flow_bb)
+hybrid_flow_sc.encoder_bb = False
+hybrid_flow_sc.encoder_atom37 = True
+hybrid_flow_sc.self_condition_decoder = False
+hybrid_flow_sc.local_size = 256
+hybrid_flow_sc.pair_size = 128
+
+hybrid_flow_sc_neq = deepcopy(hybrid_flow_sc)
+hybrid_flow_sc_neq.non_equivariant = True
+
+hybrid_flow_sc_neq_weight = deepcopy(hybrid_flow_sc_neq)
+hybrid_flow_sc_neq_weight.no_loss_weight = False
+
+hybrid_flow_bb_pair_time = deepcopy(hybrid_flow_bb_weight)
+hybrid_flow_bb_pair_time.pair_time = True
+hybrid_flow_bb_pair_time.invert_pos_mask = True
+hybrid_flow_bb_pair_time.fape_weight = 0.0
+hybrid_flow_bb_pair_time.fape_trajectory_weight = 0.0
+
+hybrid_flow_bb_decoder_diffusion = deepcopy(hybrid_flow_bb_pair_time)
+hybrid_flow_bb_decoder_diffusion.decoder_diffusion = True
+hybrid_flow_bb_decoder_diffusion.fape_weight = 1.0
+
+hybrid_flow_sc_protlike = deepcopy(hybrid_flow_bb_weight)
+hybrid_flow_sc_protlike.encoder_bb = False
+hybrid_flow_sc_protlike.encoder_atom37 = True
+hybrid_flow_sc_protlike.pair_time = True
+hybrid_flow_sc_protlike.invert_pos_mask = True
+hybrid_flow_sc_protlike.encoder_stop = True
+hybrid_flow_sc_protlike.decouple_ae = True
+hybrid_flow_sc_protlike.no_override = True
+hybrid_flow_sc_protlike.fape_weight = 1.0
+
+hybrid_flow_sc_protlike_unclip = deepcopy(hybrid_flow_sc_protlike)
+hybrid_flow_sc_protlike_unclip.clipped_weight = 0.0
+hybrid_flow_sc_protlike_unclip.unclipped_weight = 1.0
+hybrid_flow_sc_protlike_unclip.stop_encoder_loss = True
+
+hybrid_flow_sc_protlike_unclip_nostope = deepcopy(hybrid_flow_sc_protlike_unclip)
+hybrid_flow_sc_protlike_unclip_nostope.stop_encoder_loss = False
+
+hybrid_flow_sc_latent = deepcopy(hybrid_flow_sc_protlike)
+hybrid_flow_sc_latent.encode_latent = True
+hybrid_flow_sc_latent.stop_encoder_loss = True
+
+hybrid_flow_sc_latent_nostop = deepcopy(hybrid_flow_sc_latent)
+hybrid_flow_sc_latent_nostop.stop_encoder_loss = False
+hybrid_flow_sc_latent_nostop.stop_encoder = False
+hybrid_flow_sc_latent_nostop.decouple_ae = False
+hybrid_flow_sc_latent_nostop.sidechain_weight = 1.0
+hybrid_flow_sc_latent_nostop.clipped_weight = 0.0
+hybrid_flow_sc_latent_nostop.unclipped_weight = 1.0
+hybrid_flow_sc_latent_nostop.encoder_no_learned_scale = True
+
+hybrid_flow_sc_latent_large = deepcopy(hybrid_flow_sc_latent_nostop)
+hybrid_flow_sc_latent_large.local_size = 512
+hybrid_flow_sc_latent_large.pair_size = 128
+hybrid_flow_sc_latent_large.clipped_weight = 1.0
+hybrid_flow_sc_latent_large.unclipped_weight = 0.1
+hybrid_flow_sc_latent_large.decouple_ae = True
+
+hybrid_flow_sc_neq_pair_time = deepcopy(hybrid_flow_bb_weight)
+hybrid_flow_sc_neq_pair_time.encoder_bb = False
+hybrid_flow_sc_neq_pair_time.encoder_atom37 = True
+hybrid_flow_sc_neq_pair_time.self_condition_decoder = False
+hybrid_flow_sc_neq_pair_time.non_equivariant = True
+hybrid_flow_sc_neq_pair_time.pair_time = True
+hybrid_flow_sc_neq_pair_time.invert_pos_mask = True
+hybrid_flow_sc_neq_pair_time.fape_weight = 1.0
+hybrid_flow_sc_neq_pair_time.fape_trajectory_weight = 0.0
+
+hybrid_flow_norm_nostop = deepcopy(hybrid_flow_norm_noweight)
+hybrid_flow_norm_nostop.no_decoder_stop = True
+hybrid_flow_norm_nostop.local_size = 512
+hybrid_flow_norm_nostop.pair_size = 64
+hybrid_flow_norm_nostop.clipped_weight = 1.0
+hybrid_flow_norm_nostop.unclipped_weight = 0.1
+
+hybrid_ve_norm_softclip = deepcopy(hybrid_ve_norm_unclip)
+hybrid_ve_norm_softclip.softclip = True
+
+hybrid_ve_normstop = deepcopy(hybrid_ve_norm)
+hybrid_ve_normstop.stop_encoder = True
+
 large_ve_scaled = deepcopy(default_ve_scaled)
 large_ve_scaled.local_size = 256
 large_ve_scaled.pair_size = 128

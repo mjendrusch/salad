@@ -106,6 +106,23 @@ def extract_pseudo_distmap(positions: Vec3Array, resi, chain, batch, mask: jnp.n
         pseudo_dist = (pseudo_dist[:, :, None] + pseudo_dist[None, :, :]).min(axis=1)
     return pseudo_dist
 
+def pairwise_distance(x, y=None, neighbours=None) -> jax.Array:
+    """Compute the pairwise distance between coordinate arrays x and y.
+
+    Args:
+        x, y: coordinate arrays of shape (..., 3).
+        neighbours: optional list of neighbours in y for positions in x.
+    Returns:
+        pairwise distance matrix.
+    """
+    if y is None:
+        y = x
+    if not isinstance(x, Vec3Array):
+        x = Vec3Array.from_array(x)
+    if not isinstance(y,  Vec3Array):
+        y = Vec3Array.from_array(y)
+    return (x[:, None] - y[neighbours]).norm()
+
 def bond_angle(x, y, z):
     """Compute the bond angle between three atoms x, y and z.
     

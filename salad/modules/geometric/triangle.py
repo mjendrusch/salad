@@ -16,8 +16,8 @@ class FastTriangle(hk.Module):
     def __call__(self, pair, mask=None):
         if mask is None:
             mask = True
-        gate = Linear(pair.shape[-1], bias=False, initializer="relu")(pair)
-        value = Linear(pair.shape[-1], bias=False)(pair) * jax.nn.gelu(gate)
+        gate = Linear(pair.shape[-1], bias=True)(pair)
+        value = Linear(pair.shape[-1], bias=False)(pair) * jax.nn.sigmoid(gate)
         value = jnp.where(mask, value, 0.0)
         x, y, xt, yt = jnp.moveaxis(value, -1, 0).reshape(4, -1, value.shape[:-1])
         xt = jnp.swapaxis(xt, 1, 2)
@@ -27,6 +27,6 @@ class FastTriangle(hk.Module):
             jnp.einsum("...ik,...jk->...ij", xt, yt)), axis=0)
         value = jnp.moveaxis(value, 0, -1)
         value = hk.LayerNorm([-1], True, True)(value)
-        gate = Linear(pair.shape[-1], bias=False, initializer="relu")(value)
-        value = Linear(pair.shape[-1], bias=False)(value) * gate
+        gate = Linear(pair.shape[-1], bias=True)(value)
+        value = Linear(pair.shape[-1], bias=False)(value) * jax.nn.sigmoid(gate)
         return value

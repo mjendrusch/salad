@@ -173,7 +173,7 @@ def time_embedding(t, size=128, start=0, stop=1) -> jnp.ndarray:
     bins = bins * (stop - start) + start
     return jnp.exp(-size * (t[..., None] - bins) ** 2)
 
-def fourier_time_embedding(t, size=128) -> jnp.ndarray:
+def fourier_time_embedding(t, size=128, base=10_000, scale=1.0) -> jnp.ndarray:
     """Fourier time embedding.
     
     Args:
@@ -183,8 +183,8 @@ def fourier_time_embedding(t, size=128) -> jnp.ndarray:
         Fourier time embedding.
     """
     exponent = 2 * jnp.arange(0, size // 2, dtype=t.dtype) / size
-    denominator = 10_000 ** exponent
-    result = (t[..., None]) / denominator
+    denominator = base ** exponent
+    result = (scale * t[..., None]) / denominator
     return jnp.concatenate((jnp.sin(result), jnp.cos(result)), axis=-1)
 
 def log_sigma_embedding(log_sigma, size=128, min=-4, max=0) -> jnp.ndarray:

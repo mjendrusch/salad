@@ -35,6 +35,12 @@ def drop(data, p=0.1, is_training=True):
         data = jnp.where(mask, 0, data) / (1 - p)
     return data
 
+def masked_softmax(mask, attn, axis=1, value=-1e9):
+    attn = jnp.where(mask, attn, value)
+    attn = jax.nn.softmax(attn, axis=axis)
+    attn = jnp.where(mask, attn, 0)
+    return attn    
+
 class Transition(hk.Module):
     """A simple MLP feed forward block."""
     def __init__(self, factor=4, depth=2,

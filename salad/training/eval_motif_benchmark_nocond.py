@@ -333,7 +333,7 @@ if __name__ == "__main__":
         dssp_mean="none",
         dssp="none",
         template="none",
-        template_aa="False",
+        template_aa="True",
         prev_threshold=1.0,
         cloud_std="none",
         sym_threshold=0.0,
@@ -389,7 +389,8 @@ if __name__ == "__main__":
                 t_seq=jnp.ones((num_aa,), dtype=jnp.float32)
             )
             data["motifs"] = motifs
-            data["aa_condition"] = aatype
+            if opt.template_aa == "True":
+                data["aa_condition"] = aatype
             if cloud_std is not None:
                 data["cloud_std"] = cloud_std
             init_prev = dict(
