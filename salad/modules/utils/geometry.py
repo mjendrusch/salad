@@ -418,7 +418,7 @@ def distance_rbf(distance, min_distance=0.0, max_distance=22.0, bins=64, centers
         step = jnp.concatenate((step[:1], step), axis=0)
     return gaussian_rbf(distance, centers, step)
 
-def distance_one_hot(distance, min_distance=0.0, max_distance=22.0, bins=64):
+def distance_one_hot(distance, min_distance=0.0, max_distance=22.0, bins=64, return_index=False):
     """Computes one-hot encoding of continuous inputs.
 
     Args:
@@ -426,6 +426,8 @@ def distance_one_hot(distance, min_distance=0.0, max_distance=22.0, bins=64):
         min_distance: minimum distance for input binning.
         max_distance: maximum distance for input binning.
         bins: number of bins.
+        return_index: return the bin index instead of a
+            one-hot representation. Default: False.
 
     Returns:
         One-hot encoding of `distance` with `bins` bins.
@@ -433,6 +435,8 @@ def distance_one_hot(distance, min_distance=0.0, max_distance=22.0, bins=64):
     step = (max_distance - min_distance) / bins
     centers = min_distance + jnp.arange(bins) * step + step / 2
     argmin = jnp.argmin(abs(distance[..., None] - centers), axis=-1)
+    if return_index:
+        return argmin
     return jax.nn.one_hot(argmin, bins, axis=-1)
 
 def hl_gaussian(data, minimum=0.0, maximum=22.0, bins=64, sigma_ratio=1.0):

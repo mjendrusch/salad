@@ -27,11 +27,17 @@ def postnorm_skip(local, output):
 def prenorm_input(local):
     return hk.LayerNorm([-1], True, True)(local)
 
-def drop(data, p=0.1, is_training=True):
+def drop(data: jax.Array, p=0.1, shared_axes=None, is_training=True):
     """Dropout"""
     if is_training:
+        mask_shape = list(data.shape)
+        if shared_axes is not None:
+            if isinstance(shared_axes, int):
+                shared_axes = (shared_axes,)
+            for ax in shared_axes:
+                mask_shape[ax] = 1
         mask = jax.random.bernoulli(
-            hk.next_rng_key(), p, data.shape)
+            hk.next_rng_key(), p, mask_shape)
         data = jnp.where(mask, 0, data) / (1 - p)
     return data
 

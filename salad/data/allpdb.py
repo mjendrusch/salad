@@ -23,18 +23,43 @@ def decode_sequence(x: np.ndarray) -> str:
     return "".join([AA_CODE[c] for c in x])
 
 # residue types in PDB
-RESTYPES = ["AA", "DNA", "RNA", "METAL", "SMOL", "HOH"]
+RESTYPES = ["AA", "RNA", "DNA", "SMOL", "METAL", "HOH"]
+# atom types
+ATOM_TYPES = ATOM_TYPE_ORDER
 # non-water residue types
-RESTYPES_NO_WATER = ["AA", "DNA", "RNA", "METAL", "SMOL"]
+RESTYPES_NO_WATER = ["AA", "RNA", "DNA", "SMOL", "METAL"]
 # list of amino acid 3-letter codes in alphabetical order
 AA_ORDER = ['ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN',
             'GLU', 'GLY', 'HIS', 'ILE', 'LEU', 'LYS',
             'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP',
             'TYR', 'VAL', 'UNK']
+RNA_ORDER = ['A', 'G', 'C', 'U', 'N']
+DNA_ORDER = ['DA', 'DG', 'DC', 'DT', 'DN']
+ATOM_ORDER = list(ATOM_TYPES) + ["?"]
+RESIDUE_ORDER = np.array(AA_ORDER + RNA_ORDER + DNA_ORDER + ATOM_ORDER)
 # list of amino acid backbone atom names
 AA_BACKBONE_ATOMS = ["N", "CA", "C", "O"]
 # list of nucleic acid backbone atom names
-NA_BACKBONE_ATOMS = ["P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C1'", "C2'", "O2'", "C3'", "O3'"]
+DNA_BACKBONE_ATOMS = ["OP3", "P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "C2'", "C1'"]
+RNA_BACKBONE_ATOMS = ["P", "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'", "O2'", "C1'"]
+# restype center atoms
+RESTYPE_CENTER = np.array([
+    1, # AA: CA
+    RNA_BACKBONE_ATOMS.index("C1'"), # RNA: C1'
+    DNA_BACKBONE_ATOMS.index("C1'"), # DNA: C1'
+    0, # Metal: 0
+    0, # small molecule: 0
+    0, # water: O
+])
+# restype one-hot mask
+RESTYPE_ONEHOT = np.array([
+    (RESIDUE_ORDER[:, None] == np.array(AA_ORDER[:-1])).any(axis=1), # AA
+    (RESIDUE_ORDER[:, None] == np.array(RNA_ORDER[:-1])).any(axis=1), # RNA
+    (RESIDUE_ORDER[:, None] == np.array(DNA_ORDER[:-1])).any(axis=1), # DNA
+    (RESIDUE_ORDER[:, None] == np.array(ATOM_ORDER[:-1])).any(axis=1), # METAL
+    (RESIDUE_ORDER[:, None] == np.array(ATOM_ORDER[:-1])).any(axis=1), # SMOL
+    (RESIDUE_ORDER[:, None] == np.array(ATOM_ORDER[:-1])).any(axis=1), # HOH
+], dtype=np.bool_)
 
 class AllPDB:
     """Implements data loading for structures in the PDB.
@@ -67,7 +92,7 @@ class AllPDB:
                                              seqres_aa=seqres_aa,
                                              seqres_na=seqres_na,
                                              npz_version=npz_version)
-        self.filter_residue_type = np.array(filter_residue_type or ["AA", "NA", "SMOL"])
+        self.filter_residue_type = np.array(filter_residue_type or RESTYPES_NO_WATER)
         self.fields = [
             "residue_type", "residue_name",
             "residue_index", "chain_index",
@@ -88,6 +113,7 @@ class AllPDB:
         # filter for selected residue types
         # optionally return separate dictionaries
         # for different residue types.
+        # print("has dna?", np.unique(raw_data["residue_type"]))
         if self.split_types:
             split_data = dict()
             for res_type in self.filter_residue_type:
@@ -226,14 +252,18 @@ class AtomPDB(AllPDB):
         peptide_c = (atom_name == "C") * is_aa_backbone
         # mark DNA/RNA backbone atoms as well
         is_na = (residue_type == "DNA") + (residue_type == "RNA") > 0
-        na_backbone_one_hot = (atom_name[:, None] == NA_BACKBONE_ATOMS) * is_na[:, None]
-        is_na_backbone = na_backbone_one_hot.any(axis=1)
+        rna_backbone_one_hot = (atom_name[:, None] == RNA_BACKBONE_ATOMS) * is_na[:, None]
+        is_rna_backbone = rna_backbone_one_hot.any(axis=1)
+        dna_backbone_one_hot = (atom_name[:, None] == DNA_BACKBONE_ATOMS) * is_na[:, None]
+        is_dna_backbone = dna_backbone_one_hot.any(axis=1)
         # mark 5' and 3' bonding atoms
-        na_p = (atom_name == "P") * is_na_backbone
-        na_o3 = (atom_name == "O3'") * is_na_backbone
+        rna_p = (atom_name == "P") * is_rna_backbone
+        rna_o3 = (atom_name == "O3'") * is_rna_backbone
+        dna_op3 = (atom_name == "OP3") * is_dna_backbone
+        dna_c3 = (atom_name == "C3'") * is_dna_backbone
         # set up joint privileged atom info (amino acids and nucleic acids)
         privileged_atom = np.concatenate((
-            aa_backbone_one_hot, na_backbone_one_hot), axis=-1)
+            aa_backbone_one_hot, rna_backbone_one_hot, dna_backbone_one_hot), axis=-1)
         # encode periodic table information
         atom_type_index = index_atoms(atom_type)
         atom_features = apply_pt(atom_type_index)
@@ -260,8 +290,10 @@ class AtomPDB(AllPDB):
             is_bb=is_aa_backbone,
             peptide_n=peptide_n,
             peptide_c=peptide_c,
-            na_p=na_p,
-            na_o3=na_o3,
+            rna_p=rna_p,
+            rna_o3=rna_o3,
+            dna_op3=dna_op3,
+            dna_c3=dna_c3,
             privileged_atom=privileged_atom,
             atom_order_index=atom_order_index,
             chain_index=chain_index,
@@ -1239,6 +1271,12 @@ def numerical_chain_index(chain):
     indices = np.unique(chain)
     return np.argmax(chain[:, None] == indices[None, :], axis=-1)
 
+def numerical_residue_type(residue_type):
+    return np.argmax(np.array(residue_type)[:, None] == np.array(RESTYPES), axis=-1)
+
+def numerical_atom_type(atom_type):
+    return np.argmax(np.array(atom_type[:, None] == np.array(ATOM_TYPES)), axis=-1)
+
 def slice_dict(data, indices):
     """Slice all entries in a data dictionary by a set of indices."""
     return {
@@ -1246,6 +1284,48 @@ def slice_dict(data, indices):
         for name, item in data.items()
         if name not in ["has_structure"]
     }
+
+def split_dict(data, index):
+    """Split dictionary by index values in ascending order."""
+    indices = np.unique(index)
+    return [slice_dict(data, index == i) for i in indices]
+
+ATOM_KEYS = [
+    "all_atom_mask", "all_atom_positions",
+    "atom_type", "atom_name"
+]
+
+def atomize(data, atom_keys=None, num_atoms=None):
+    if atom_keys is None:
+        atom_keys = ATOM_KEYS
+    result = {k: v for k, v in data.items()}
+    # NOTE: all atomized residues should be type "SMOL"
+    result["residue_type"] = np.array(result["residue_type"].shape[0] * ["SMOL"])
+    result["residue_name"] = np.array(result["residue_name"].shape[0] * ["???"])
+    access_index = result["all_atom_mask"]
+    for key in result:
+        if key in atom_keys:
+            result[key] = result[key][access_index]
+        else:
+            result[key] = np.repeat(result[key][:, None], access_index.shape[1], axis=1)[access_index]
+    if num_atoms is not None:
+        result = broadcast_atomx(
+            result, num_atoms=num_atoms,
+            atom_keys=atom_keys)
+    return result
+
+def broadcast_atomx(atomized, num_atoms=24, atom_keys=None):
+    if atom_keys is None:
+        atom_keys = ATOM_KEYS
+    result = {}
+    for key, value in atomized.items():
+        if key in atom_keys:
+            result[key] = np.repeat(value[:, None], num_atoms, axis=1)
+            if key == "all_atom_mask":
+                result[key][:, 1:] = False
+        else:
+            result[key] = value
+    return result
 
 def pad_item(data, target_size):
   r"""Pad a data tensor to the desired crop size, if

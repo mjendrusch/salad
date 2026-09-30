@@ -86,7 +86,7 @@ def get_hbond_map(
     local_mask *= ~jnp.diag(jnp.ones(num_aa - 1, dtype=bool), k=-1)
     local_mask *= ~jnp.diag(jnp.ones(num_aa - 2, dtype=bool), k=-2)
     # hydrogen bond map (continuous value extension of original definition)
-    hbond_map = jnp.clip(cutoff - margin - e, a_min=-margin, a_max=margin)
+    hbond_map = jnp.clip(cutoff - margin - e, min=-margin, max=margin)
     hbond_map = (jnp.sin(hbond_map / margin * jnp.pi / 2) + 1.0) / 2
     hbond_map = jnp.where(local_mask, hbond_map, 0)
     # return h-bond map

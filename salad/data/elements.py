@@ -1,30 +1,6 @@
+import os
+import zipfile
 import numpy as np
-
-# Adapted from PyDSSP
-
-# MIT License
-
-# Copyright (c) 2022 Shintaro Minami
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
-from typing import Tuple
 
 CONST_Q1Q2 = 0.084
 CONST_F = 332
@@ -85,7 +61,7 @@ def np_get_hbond_map(
     local_mask *= ~np.diag(np.ones(num_aa - 1, dtype=bool), k=-1)
     local_mask *= ~np.diag(np.ones(num_aa - 2, dtype=bool), k=-2)
     # hydrogen bond map (continuous value extension of original definition)
-    hbond_map = np.clip(cutoff - margin - e, a_min=-margin, a_max=margin)
+    hbond_map = np.clip(cutoff - margin - e, -margin, margin)
     hbond_map = (np.sin(hbond_map / margin * np.pi / 2) + 1.0) / 2
     hbond_map = np.where(local_mask, hbond_map, 0)
     # return h-bond map
@@ -94,16 +70,12 @@ def np_get_hbond_map(
 
 def np_assign_dssp(coord: np.ndarray,
                    batch_index: np.ndarray,
-                   mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                   mask: np.ndarray) -> np.ndarray:
     if coord.shape[0] < 5:
         # if coordinates are too short (< 3) for DSSP computation,
         # just return unknown DSSP (index = 3)
         dssp = 3 * np.ones(batch_index.shape, dtype=np.int32)
-        blocks = np.zeros_like(batch_index, dtype=np.int32)
-        block_adjacency = np.zeros((
-            batch_index.shape[0], batch_index.shape[0]),
-            dtype=np.bool_)
-        return dssp, blocks, block_adjacency
+        return dssp
     # check input
     coord, _ = _check_input(coord)
     # create pair mask
@@ -146,7 +118,7 @@ def np_assign_dssp(coord: np.ndarray,
     strand = a_strand + p_strand + a_res + p_res > 0
     # H, E, L of C3
     helix = (helix3 + helix4 + helix5) > 0
-    strand = ladder
+    # strand = ladder
     loop = (~helix * ~strand)
     index = np.argmax(np.stack([loop, helix, strand], axis=-1), axis=-1)
     secondary_structure = index
@@ -156,7 +128,7 @@ def np_assign_dssp(coord: np.ndarray,
 def fragment_object(positions, mask, center_ratio=20, num_kmeans_iter=5):
     num_object = mask.sum()
     if num_object <= 0:
-        return []
+        return [], []
     num_centers = num_object // center_ratio + 1
     nn_pos = positions
     # k means
@@ -178,8 +150,11 @@ def fragment_object(positions, mask, center_ratio=20, num_kmeans_iter=5):
     dist = np.linalg.norm(centers[:, None] - nn_pos[None, :], axis=-1)
     assignment = dist.argmin(axis=0)
     nn_elements = []
+    residue_count = []
     for i in range(num_centers):
-        assigned = nn_pos[assignment == i]
+        selection = assignment == i
+        residue_count.append(selection.astype(np.int32).sum())
+        assigned = nn_pos[selection]
         center = assigned.mean(axis=0)
         dirs = assigned - center
         svd = np.linalg.svd((dirs[:, :, None] * dirs[:, None, :]).mean(axis=0))
@@ -188,45 +163,177 @@ def fragment_object(positions, mask, center_ratio=20, num_kmeans_iter=5):
         start = assigned[dirs_sorted_index[:3]].mean(axis=0)
         end = assigned[dirs_sorted_index[-3:]].mean(axis=0)
         nn_elements.append((start, center, end))
-    return nn_elements
+    return nn_elements, residue_count
 
 def to_elements(data, num_kmeans_iter=5, assignment=np_assign_dssp):
     is_smol = data["residue_type"] == "SMOL"
+    is_aa = data["residue_type"] == "AA"
     is_na = data["residue_type"] == "DNA"
     is_na += data["residue_type"] == "RNA"
     is_na = is_na > 0
-    dssp = assignment(data["position"], data["chain_index"], data["atom_mask"].any(axis=1))
-    is_loop = dssp == 0
+    # skip inputs with no amino acids
+    if not is_aa.any():
+        return None
+    dssp = assignment(
+        data["position"][is_aa], data["chain_index"][is_aa],
+        data["atom_mask"][is_aa].any(axis=1))
+    dssp_ = np.concatenate((np.array([dssp[-1]]), dssp), axis=0)
+    dssp_change = dssp_[1:] != dssp_[:-1]
+    blocks = np.cumsum(dssp_change)
+    # unknown dssp can brick downstream pipeline
+    is_loop = (dssp == 0) + (dssp == 3) > 0
     dssp = dssp[~is_loop]
+    dssp = np.clip(dssp - 1, 0, 1).astype(np.int32)
     blocks = blocks[~is_loop]
-    ca = data["position"][~is_loop][:, 1]
+    ca = data["position"][is_aa][~is_loop][:, 1]
+    chains = data["chain_index"][is_aa][~is_loop]
     nn = data["position"][is_na]
+    nn_index = data["chain_index"][is_na]
     smol_pos = data["position"][is_smol][:, 0]
     block_names = np.unique(blocks)
     block_num_mean = (4, 2)
     dssps = []
     coords = []
-    for block_name in block_names:
+    residue_count = []
+    chain_index = []
+    block_index = []
+    for idx, block_name in enumerate(block_names):
         selected = blocks == block_name
         block_dssp = dssp[selected][0]
-        block_dssp -= 1
-        if block_dssp == 1 and len(selected) < 2:
-            continue
         block_ca = ca[selected]
-        size = block_ca.shape[0]
+        chain = chains[selected][0]
+        # block_dssp -= 1
+
+        size = len(block_ca)
         center = block_ca[max(size//2 - 2, 0):min(size//2 + 2, size)].mean(axis=0)
         start = block_ca[:block_num_mean[block_dssp]].mean(axis=0)
         end = block_ca[-block_num_mean[block_dssp]:].mean(axis=0)
-        coords.append((start, center, end))
-        dssps.append(block_dssp)
+        v1 = start - center
+        v2 = end - center
+        angle = abs(np.arctan2(
+            np.linalg.norm(np.cross(v1, v2), axis=-1),
+            np.dot(v1, v2)
+        ))
+        if len(block_ca) < 2:
+            continue
+        if block_dssp == 1 and len(block_ca) > 4 and angle < 2 * np.pi / 3:
+            block_dssps = [block_dssp, block_dssp]
+            block_cas = [block_ca[:size // 2], block_ca[size // 2:]]
+        else:
+            block_dssps = [block_dssp]
+            block_cas = [block_ca]
+        for block_ca, block_dssp in zip(block_cas, block_dssps):
+            size = len(block_ca)
+            center = block_ca[max(size//2 - 2, 0):min(size//2 + 2, size)].mean(axis=0)
+            start = block_ca[:block_num_mean[block_dssp]].mean(axis=0)
+            end = block_ca[-block_num_mean[block_dssp]:].mean(axis=0)
+            coords.append((start, center, end))
+            dssps.append(block_dssp)
+            residue_count.append(len(block_ca))
+            block_index.append(idx)
+            chain_index.append(chain)
     # assign nucleic acids
     nn_pos = nn[:, 11]
-    nn_elements = fragment_object(nn_pos, is_na, center_ratio=20, num_kmeans_iter=num_kmeans_iter)
-    coords += nn_elements
-    dssps += len(nn_elements) * [2] # 2 = NA
+    nn_coords, nn_blocks, nn_chains, nn_count = fragment_nn(nn_pos, nn_index, center_ratio=6)
+    coords += nn_coords
+    block_index += nn_blocks
+    chain_index += nn_chains
+    dssps += len(nn_coords) * [2] # 2 = NA
+    residue_count += nn_count
     # assign small molecules
     smol_pos = smol_pos
-    smol_elements = fragment_object(smol_pos, is_smol, center_ratio=20, num_kmeans_iter=num_kmeans_iter)
+    smol_elements, smol_count = fragment_object(smol_pos, is_smol, center_ratio=20, num_kmeans_iter=num_kmeans_iter)
     coords += smol_elements
     dssps += len(smol_elements) * [3] # 3 = SMOL
-    return dict(dssp=np.array(dssps, dtype=np.int32), position=np.array(coords, dtype=np.float32))
+    block_index += list(range(len(smol_elements)))
+    chain_index += list(range(len(smol_elements)))
+    residue_count += smol_count
+    return dict(dssp=np.array(dssps, dtype=np.int32),
+                residue_count=np.array(residue_count, dtype=np.int32),
+                block_index=np.array(block_index, dtype=np.int32),
+                chain_index=np.unique(np.array(chain_index), return_inverse=True)[1],
+                position=np.array(coords, dtype=np.float32))
+
+def fragment_nn(pos, chain_index, center_ratio=10):
+    block_names = np.unique(chain_index)
+    coords = []
+    blocks = []
+    chains = []
+    for block_name in block_names:
+        block = pos[chain_index == block_name]
+        size = len(block)
+        num_centers = int(np.ceil(size / center_ratio))
+        center_length = center_ratio // 2
+        centers = [
+            (   
+                block[max(c - center_length, 0):max(min(c - center_length + 2, size), 1)].mean(axis=0),
+                block[max(c - 2, 0):min(c + 2, size)].mean(axis=0),
+                block[min(max(c + center_length - 2, 0), size - 1):min(c + center_length, size)].mean(axis=0),
+            )
+            for c in np.round(np.linspace(0, size, num_centers + 2)).astype(np.int32)[1:-1]
+        ]
+        for idx, center in enumerate(centers):
+            coords.append(center)
+            chains.append(block_name)
+            blocks.append(idx)
+    return coords, blocks, chains, len(coords) * [center_ratio]
+
+def flip(pos, dssp):
+    return -pos, dssp
+
+def reverse(pos, dssp):
+    return pos[::-1][:, ::-1], dssp[::-1]
+
+def partition_nn(pos, chain_index, center_ratio=10):
+    block_names = np.unique(chain_index)
+    coords = []
+    for block_name in block_names:
+        block = pos[chain_index == block_name]
+        size = len(block)
+        num_centers = int(np.ceil(size / center_ratio)) + 2
+        centers = [
+            block[max(c - 2, 0):min(c + 2, size)].mean(axis=0)
+            for c in np.round(np.linspace(2, size - 2, num_centers)).astype(np.int32)
+        ]
+        for center in centers:
+            coords.append(center)
+    return coords
+
+def npz_to_elements(path, convert_path, max_residues = 20_000):
+    data = np.load(path)
+    if data["residue_index"].shape[0] > max_residues:
+        return None
+    elements = to_elements(data)
+    if elements is None:
+        return None
+    np.savez_compressed(convert_path, **elements)
+    return elements
+
+def convert_pdb_to_elements(path, elements_base="elements/", elements_csv="elements.csv",
+                            num_workers=1, worker_id=0, max_residues = 10_000):
+    with open(elements_csv + f".{worker_id}", "wt") as f:
+        f.write("name,num_chains,num_helix,num_strand,num_na,num_smol\n")
+        dirs = sorted(os.listdir(path))
+        dirs = dirs[worker_id::num_workers]
+        for subdir in dirs:
+            for name in os.listdir(f"{path}/{subdir}/"):
+                full_path = f"{path}/{subdir}/{name}"
+                convert_path = f"{elements_base}/{subdir}/{name}"
+                os.makedirs(f"{elements_base}/{subdir}/", exist_ok=True)
+                try:
+                    elements = npz_to_elements(full_path, convert_path, max_residues = 10_000)
+                except zipfile.BadZipFile as e:
+                    print(f"Bad Zip File {full_path}")
+                    continue
+                except ValueError as e:
+                    print(f"Bad PDB {full_path}")
+                    continue
+                if elements is None:
+                    print(f"Too large file {full_path}")
+                    continue
+                num_chains = len(np.unique(elements["chain_index"]))
+                num_helix = (elements["dssp"] == 0).astype(np.int32).sum()
+                num_strand = (elements["dssp"] == 1).astype(np.int32).sum()
+                num_na = (elements["dssp"] == 2).astype(np.int32).sum()
+                num_smol = (elements["dssp"] == 3).astype(np.int32).sum()
+                f.write(f"{name},{num_chains},{num_helix},{num_strand},{num_na},{num_smol}\n")

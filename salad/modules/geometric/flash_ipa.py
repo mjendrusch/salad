@@ -170,7 +170,7 @@ class FlashPointAttention(hk.Module):
         if self.equivariant:
             out_points = frames[:, None].apply_inverse_to_point(out_points)
         else:
-            out_points += frames.translation[:, None]
+            out_points -= frames.translation[:, None]
         out_norm = out_points.norm().reshape(query.shape[0], -1)
         out_points = out_points.to_array().reshape(query.shape[0], -1)
         out_components = [out_scalar, out_points, out_norm]
@@ -207,6 +207,170 @@ class HybridPointAttention(hk.Module):
         attn = Linear(self.heads, bias=False)(pair_features)
         attn = masked_softmax(neighbour_mask[..., None], attn, axis=1)
         out = jnp.einsum("ijh,ijc->ihc", attn, pair_value)
+        update += Linear(local.shape[-1], bias=False, initializer="zeros")(
+                out.reshape(out.shape[0], -1))
+        return update
+
+class GatedPointAttentionV2(hk.Module):
+    """Efficient point attention from Liu et al. 2025,
+    Flash Invariant Point Attention.
+    """
+    def __init__(self, key_size=32, heads=8, key_points=8,
+                 pair_size=32, pair_rank=2, residue_gamma=False,
+                 final_init="zeros", backend="xla", key_norm_params=True,
+                 overscale_dfactor=True, return_attn=False, point_init="linear", name = "flash_ipa"):
+        super().__init__(name=name)
+        self.key_size = key_size
+        self.heads = heads
+        self.key_points = key_points
+        self.pair_size = pair_size
+        self.pair_rank = pair_rank
+        self.residue_gamma = residue_gamma
+        self.final_init = final_init
+        self.backend = backend
+        self.key_norm_params = key_norm_params
+        self.return_attn = return_attn
+        self.overscale_dfactor = overscale_dfactor
+        self.point_init = point_init
+
+    def __call__(self, local, pos, mask, pair_bias=None):
+        # query / key / value computation and reshaping
+        def attention_component(x):
+            result = Linear(self.key_size * self.heads, bias=False)(x)
+            return result.reshape(*result.shape[:-1], self.heads, self.key_size)
+        # query / key / value point computation, projection and reshaping
+        def attention_points(pos, x):
+            result = Linear(3 * self.key_points * self.heads, bias=False, initializer=self.point_init)(x)
+            result = result.reshape(*result.shape[:-1], self.heads, self.key_points, 3)
+            result += pos[:, 1, None, None, :]
+            result = Vec3Array.from_array(result)
+            return result
+        # compute query, key, value features
+        use_params = self.key_norm_params
+        query = hk.LayerNorm([-1], use_params, use_params)(attention_component(local))
+        key = hk.LayerNorm([-1], use_params, use_params)(attention_component(local))
+        value = attention_component(local)
+        # compute query, key, value points
+        query_points = attention_points(pos, local)
+        key_points = attention_points(pos, local)
+        value_points = attention_points(pos, local)
+        # assemble joint query / key
+        w_C = jnp.sqrt(2 / (9 * self.key_points))
+        w_L = jnp.sqrt(1 / 3)
+
+        # per-head scale factor for point-distance attention
+        gamma = hk.get_parameter(
+            "gamma", (self.heads,),
+            init=hk.initializers.Constant(jnp.log(jnp.exp(1.) - 1.))
+        )
+        gamma = gamma[None, :, None]
+        # optionally have the residue control gamma
+        if self.residue_gamma:
+            gamma += Linear(self.heads, bias=False, initializer="zeros")(local)[:, None, :]
+        dfactor = jax.nn.softplus(gamma)
+        if self.overscale_dfactor:
+            dfactor *= w_C / 2
+        # flatten query, key and value to put them in the correct shape for standard attention
+        query_flat = query_points.to_array().reshape(*query.shape[:2], -1)
+        query_squared = query_points.norm2()
+        key_flat = key_points.to_array().reshape(*key.shape[:2], -1)
+        key_squared = key_points.norm2()
+        value_flat = value_points.to_array().reshape(*value.shape[:2], -1)
+
+        # combine query and key features in such a way that taking the inner product
+        # of query and key results in standard IPA (with factored pair bias)
+        # this results in vectors:
+        # query: Q / sqrt(dim(Q)) :: 2 * flatten(Q_point) :: -Q_point^2 :: 1 :: bias_q
+        # key  : K                ::     flatten(K_point) :: 1 :: -K_point^2 :: bias_k
+        # taking the inner product then gives:
+        #   Q . K / sqrt(dim(Q))                          # regular attention
+        # + 2 * Q_point . K_point - Q_point^2 - K_point^2 # - sum (Q_point - K_point)^2, the point attention term
+        # + bias_q . bias_k                               # the (factored) pair bias term
+        query_components = [
+            query * w_L * jnp.sqrt(1.0 / self.key_size),
+            query_flat * (dfactor * w_L * w_C),
+            query_squared * (-dfactor * w_L * w_C / 2),
+            jnp.ones_like(key_squared) * (-dfactor * w_L * w_C / 2)
+        ]
+        key_components = [
+            key,
+            key_flat,
+            jnp.ones_like(query_squared),
+            key_squared
+        ]
+        value_components = [value, value_flat]
+        full_query = jnp.concatenate(query_components, axis=-1)
+        full_key = jnp.concatenate(key_components, axis=-1)
+        full_value = jnp.concatenate(value_components, axis=-1)
+        # work around the jax implementation requiring equal key and value size
+        truncate = False
+        value_size = full_value.shape[-1]
+        if full_value.shape[-1] != full_key.shape[-1]:
+            truncate = True
+            full_value = jnp.concatenate((
+                full_value,
+                jnp.zeros((local.shape[0], self.heads,
+                           full_key.shape[-1] - value_size))), axis=-1)
+        out_dtype = full_query.dtype
+        # FIXME: cudnn backend does not work out of the box with pair bias
+        if self.backend == "cudnn":
+            full_query = full_query.astype(jnp.bfloat16)
+            full_key = full_key.astype(jnp.bfloat16)
+            full_value = full_value.astype(jnp.bfloat16)
+            if pair_bias is not None:
+                raise NotImplementedError("requires workaround for pair bias.")
+        if pair_bias is not None:
+            pair_bias = jnp.moveaxis(pair_bias, -1, 0)
+        out_value = jax.nn.dot_product_attention(
+            full_query,
+            full_key,
+            full_value,
+            scale=1.0, mask=mask, bias=pair_bias,
+            implementation=self.backend)
+        out_value = out_value.astype(out_dtype)
+        if truncate:
+            out_value = out_value[..., :value_size]
+        # process output
+        out_scalar, out_points = jnp.split(
+            out_value, (value.shape[-1],), axis=-1)
+        out_scalar = out_scalar.reshape(local.shape[0], -1)
+        out_points = Vec3Array.from_array(
+            out_points.reshape(*out_points.shape[:-2], -1, 3))
+        out_points -= pos[:, 1, None]
+        out_norm = out_points.norm().reshape(query.shape[0], -1)
+        out_points = out_points.to_array().reshape(query.shape[0], -1)
+        out_components = [out_scalar, out_points, out_norm]
+        out_components = jnp.concatenate(out_components, axis=-1)
+        out_components = out_components.reshape(local.shape[0], self.heads, -1)
+        gate = jax.nn.sigmoid(Linear(self.heads, initializer="linear", bias=False)(local))
+        out_components = (out_components * gate[..., None]).reshape(local.shape[0], -1)
+        result = Linear(local.shape[-1], initializer=self.final_init, bias=False)(
+            out_components)
+        if self.return_attn:
+            attn_components = dict(Q=full_query, K=full_key, V=full_value, bias=pair_bias)
+            return result, attn_components
+        return result
+
+class GatedHybridAttentionV2(hk.Module):
+    def __init__(self, name = "hybrid_attn", heads=8, final_init="zeros", **kwargs):
+        super().__init__(name)
+        self.kwargs = kwargs
+        self.heads = heads
+        self.final_init = final_init
+        
+    def __call__(self, local, pos, pair, neighbours,
+                 resi, chain, batch, mask, pair_bias=None):
+        neighbour_mask = mask[neighbours] * (neighbours != -1) > 0
+        pair_mask = mask[:, None] * mask[None, :]
+        pair_mask *= batch[:, None] == batch[None, :]
+        update = GatedPointAttentionV2(
+            heads=self.heads, final_init=self.final_init, **self.kwargs)(
+            local, pos, pair_mask, pair_bias=pair_bias)
+        attn = Linear(self.heads, bias=False)(pair)
+        attn = masked_softmax(neighbour_mask[..., None], attn, axis=1)
+        out = jnp.einsum("ijh,ijc->ihc", attn, pair)
+        gate = jax.nn.sigmoid(Linear(self.heads, bias=False)(local))
+        out = out * gate[..., None]
         update += Linear(local.shape[-1], bias=False, initializer="zeros")(
                 out.reshape(out.shape[0], -1))
         return update
